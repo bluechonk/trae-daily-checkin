@@ -18,6 +18,7 @@ import path from 'node:path';
 //      --port <n>             CDP 调试端口（默认 9222）
 //      --force                已运行但无调试端口时强制重启 Trae（也可 --force 1）
 //      --profile <path>       使用独立 user-data-dir（profile）启动，隔离测试用
+//      --close                签到完成后关闭 Trae 进程
 //      -h, --help             显示帮助
 // -------------------------------------------------------------
 function parseOptions() {
@@ -32,6 +33,7 @@ function parseOptions() {
     port: Number(argValue('port') || process.env.TRAECHECKIN_PORT || 9222),
     force: argv.includes('--force') || argValue('force') === '1' || process.env.TRAECHECKIN_FORCE_RELAUNCH === '1',
     profile: argValue('profile') || argValue('user-data-dir') || process.env.TRAECHECKIN_USER_DATA_DIR?.trim() || '',
+    close: argv.includes('--close') || argValue('close') === '1' || process.env.TRAECHECKIN_CLOSE === '1',
   };
 }
 
@@ -46,12 +48,14 @@ if (OPTS.help) {
   --port <n>             CDP 调试端口（默认 9222）
   --force                已运行但无调试端口时强制重启 Trae（也可 --force 1）
   --profile <path>       使用独立 user-data-dir（profile）启动，隔离测试用
+  --close                签到完成后关闭 Trae 进程
   -h, --help             显示帮助
 
 示例：
   node src/auto-checkin.mjs
   node src/auto-checkin.mjs --port 9223 --force
   node src/auto-checkin.mjs --dir "D:\\Tools\\TRAE SOLO CN\\TRAE SOLO CN.exe" --port 9223 --profile "D:\\temp\\trae-test-profile"
+  node src/auto-checkin.mjs --port 9223 --force --close
 
 优先级说明：命令行参数 > 环境变量 > 自动扫描定位。
 `);
@@ -62,6 +66,7 @@ const DEBUG_PORT = OPTS.port;
 const FORCE_RELAUNCH = OPTS.force;
 const USER_DATA_DIR = OPTS.profile;
 const CLI_EXE = OPTS.exe;
+const CLOSE_AFTER_CHECKIN = OPTS.close;
 
 // 启动调试端口时追加的参数（独立 profile 用）
 function debugLaunchArgs() {
@@ -445,6 +450,13 @@ async function main() {
     await sleep(300); // 等 WebSocket 句柄释放后再退出
 
     console.log('[RESULT]', JSON.stringify(result, null, 2));
+
+    // 签到完成（无论成功/已签/失败）后，可选关闭 Trae 进程
+    if (CLOSE_AFTER_CHECKIN) {
+      console.log('[INFO] --close 已指定，正在关闭 Trae...');
+      await closeTrae();
+      console.log('[INFO] Trae 已关闭');
+    }
 
     if (result.status === 'success') {
       process.exit(0);

@@ -38,6 +38,8 @@ Electron 应用本质上就是 Chromium。Chromium 提供 **远程调试协议�
 "D:\Software\TRAE SOLO CN\TRAE SOLO CN.exe" --remote-debugging-port=9222
 ```
 
+> 注：上述路径仅为示例。现在脚本会自动定位 Trae 可执行文件（见 6.3），无需手动填写路径。
+
 启动后访问：
 
 ```text
@@ -88,7 +90,7 @@ http://localhost:9222/json
 1. 确保 Trae 已开启调试端口
    ├─ 端口已开：直接连接
    ├─ 未运行：自动启动 Trae（带调试端口）
-   └─ 已运行但无端口：安全报错，或设置 FORCE_RELAUNCH=1 强制重启
+   └─ 已运行但无端口：安全报错，或加 --force 参数强制重启
 
 2. 连接 CDP，定位 workbench page
 
@@ -96,9 +98,9 @@ http://localhost:9222/json
 
 4. 在菜单中查找"每日签到"行，读取右侧按钮文本
    ├─ 文本包含"已签" → 今日已签，退出码 2
-   └─ 否则 → 点击按钮，等待 1.5 秒后验证文本是否变为"今日已签"
+   └─ 否则 → 点击按钮，等待 2 秒后验证文本是否变为"今日已签"
 
-5. 输出结果并关闭连接
+5. 输出结果并关闭 CDP 连接（加 --close 参数时再关闭 Trae 进程）
 ```
 
 脚本入口：`src/auto-checkin.mjs`。
@@ -120,6 +122,9 @@ node src/auto-checkin.mjs --force
 :: 独立 profile 隔离测试（不干扰主账号）
 node src/auto-checkin.mjs --dir "D:\My Tools\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223 --force --profile "D:\temp\trae-test-profile"
 
+:: 签到完成后自动关闭 Trae（适合无人值守/任务计划场景）
+node src/auto-checkin.mjs --force --close
+
 :: 查看全部参数说明
 node src/auto-checkin.mjs --help
 ```
@@ -132,8 +137,9 @@ node src/auto-checkin.mjs --help
 | `--port <n>` | CDP 调试端口 | `9222` |
 | `--force` | 已运行但无调试端口时强制重启（也可 `--force 1`） | 关 |
 | `--profile <path>` | 使用独立 user-data-dir（profile）启动，用于隔离测试 | 默认账号 |
+| `--close` | 签到完成后关闭 Trae 进程（适合无人值守） | 关 |
 
-> 兼容旧用法：以上参数均有对应环境变量 `TRAECHECKIN_EXE` / `TRAECHECKIN_PORT` / `TRAECHECKIN_FORCE_RELAUNCH` / `TRAECHECKIN_USER_DATA_DIR`，但**命令行参数优先级更高**。实际优先级：`命令行参数 > 环境变量 > 自动扫描定位`。
+> 兼容旧用法：以上参数均有对应环境变量 `TRAECHECKIN_EXE` / `TRAECHECKIN_PORT` / `TRAECHECKIN_FORCE_RELAUNCH` / `TRAECHECKIN_USER_DATA_DIR` / `TRAECHECKIN_CLOSE`，但**命令行参数优先级更高**。实际优先级：`命令行参数 > 环境变量 > 自动扫描定位`。
 
 ### 6.2 首次/手动运行
 
@@ -153,19 +159,20 @@ node src/auto-checkin.mjs
 1. **自定义路径**：优先使用命令行参数 `--dir/--exe`（或 `TRAECHECKIN_EXE` 环境变量、`relaunch-with-debug.ps1` 的 `-ExePath` 参数）。
 2. **正在运行的进程**：查询系统中正在运行的 `TRAE*.exe` 主进程，取其真实可执行路径。
 3. **注册表卸载项**：扫描 `HKLM/HKCU` 卸载列表里 `DisplayName` 含 `Trae` 的安装位置。
-4. **常见安装目录**：有限深度扫描 `C:\Program Files`、`C:\Program Files (x86)`、`D:\Software` 等位置。
+4. **常见安装目录**：有限深度（3 层）扫描以下位置：`C:\Program Files`、`C:\Program Files (x86)`、`D:\Program Files`、`D:\Software`、`E:\Software`、`D:\`、`%USERPROFILE%`。
 
 因此别人克隆本项目后，**无需修改任何代码**即可直接运行——只要 Trae 安装在本机，无论装在哪个盘/目录都能被自动找到。
 
 ### 6.4 加入 Windows 任务计划程序（每天自动执行）
 
 1. 创建基本任务，每天固定时间触发。
-2. 操作选择"启动程序"：
-   - 程序：`D:\Projects\trae-daily-checkin\launch-with-debug.bat`
-   - 或先启动 Trae，再运行 `node src/auto-checkin.mjs --force`
+2. 操作选择"启动程序"，程序设为：
+   `node "D:\Projects\trae-daily-checkin\src\auto-checkin.mjs" --force --close`
+   - `--force`：Trae 已在前台运行也能带端口重启
+   - `--close`：签到完成后关闭 Trae，避免常驻占用资源
 3. 建议签到时间设为开机后或午休时间，并勾选"无论用户是否登录都要运行"（需要保存密码）。
 
-> 注意：任务计划里加 `--force` 参数更省心，因为 Trae 可能已经在前台运行（例如：`node src\auto-checkin.mjs --force`）。
+> 如果希望签到后 Trae 保持打开（正常使用时），不加 `--close` 即可。
 
 ## 七、退出码说明
 
@@ -192,7 +199,7 @@ node src/auto-checkin.mjs
 在某次"未登录 → 手动登录"的新账号实例上，跑了一次完整的真实签到：
 
 ```bat
-cd /d "D:\Projects\trae-daily-checkin" && set TRAECHECKIN_PORT=9223 && node src\auto-checkin.mjs
+cd /d "D:\Projects\trae-daily-checkin" && node src\auto-checkin.mjs --port 9223
 ```
 
 日志输出：
