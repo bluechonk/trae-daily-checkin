@@ -4,10 +4,162 @@
 
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import fs from 'node:fs';
+import path from 'node:path';
 
-const TRAE_EXE = process.env.TRAECHECKIN_EXE || 'D:\\Software\\TRAE SOLO CN\\TRAE SOLO CN.exe';
 const DEBUG_PORT = Number(process.env.TRAECHECKIN_PORT || 9222);
 const FORCE_RELAUNCH = process.env.TRAECHECKIN_FORCE_RELAUNCH === '1' || process.argv.includes('--force');
+// 可选：使用独立 user-data-dir（profile），用于在"另一个全新登录环境"上测试，不干扰主账号。
+// 例：set TRAECHECKIN_USER_DATA_DIR="D:\temp\trae-test-profile"
+const USER_DATA_DIR = process.env.TRAECHECKIN_USER_DATA_DIR?.trim() || '';
+
+// 启动调试端口时追加的参数（独立 profile 用）
+function debugLaunchArgs() {
+  const args = [`--remote-debugging-port=${DEBUG_PORT}`];
+  if (USER_DATA_DIR) args.push(`--user-data-dir="${USER_DATA_DIR}"`);
+  return args.join(' ');
+}
+
+// -------------------------------------------------------------
+// 0. 解析 Trae 可执行文件路径
+//    优先级：环境变量 TRAECHECKIN_EXE > 正在运行的进程 > 注册表 > 常见安装位置
+// -------------------------------------------------------------
+const COMMON_INSTALL_DIRS = [
+  'C:\\Program Files',
+  'C:\\Program Files (x86)',
+  'D:\\Program Files',
+  'D:\\Software',
+  'E:\\Software',
+  'D:\\',
+  'C:\\Users\\',
+];
+
+function looksLikeTraeExe(p) {
+  if (!p || typeof p !== 'string') return false;
+  const name = path.basename(p).toLowerCase();
+  const dir = p.toLowerCase();
+  return /trae.*\.exe$/.test(name) && !dir.includes('agent-tool-host');
+}
+
+async function runPs(script) {
+  return new Promise((resolve) => {
+    const p = spawn('powershell', ['-NoProfile', '-Command', script], { shell: true });
+    let out = '';
+    p.stdout.on('data', d => out += d.toString());
+    p.on('close', () => resolve(out.trim()));
+    p.on('error', () => resolve(''));
+  });
+}
+
+// 1) 正在运行的 Trae 进程，拿它的真实可执行路径
+async function scanRunningProcess() {
+  const out = await runPs(
+    `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath } | Select-Object -ExpandProperty ExecutablePath -Unique`
+  );
+  for (const line of out.split(/\r?\n/)) {
+    const p = line.trim();
+    if (looksLikeTraeExe(p) && fs.existsSync(p)) {
+      console.log(`[INFO] 从正在运行的进程定位到 Trae: ${p}`);
+      return p;
+    }
+  }
+  return null;
+}
+
+// 2) 从注册表卸载项里找 Trae 的 InstallLocation
+async function scanRegistry() {
+  const out = await runPs(`
+    $roots = @(
+      'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+      'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+      'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
+    )
+    $hits = foreach ($r in $roots) {
+      if (Test-Path $r) {
+        Get-ChildItem $r | ForEach-Object {
+          $v = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue)
+          if ($v.DisplayName -like '*Trae*') { $v.InstallLocation }
+        }
+      }
+    }
+    $hits | Where-Object { $_ } | Sort-Object -Unique
+  `);
+  for (const line of out.split(/\r?\n/)) {
+    const dir = line.trim();
+    if (!dir) continue;
+    for (const name of ['TRAE SOLO CN.exe', 'Trae.exe', 'TRAE.exe']) {
+      const candidate = path.join(dir, name);
+      if (fs.existsSync(candidate)) {
+        console.log(`[INFO] 从注册表定位到 Trae: ${candidate}`);
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+// 3) 常见安装目录下做有限深度的文件扫描（避免全盘遍历太慢）
+function scanCommonDirs(maxDepth = 3) {
+  const hit = [];
+  const walk = (dir, depth) => {
+    if (hit.length || depth > maxDepth) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch { return; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name.toLowerCase().includes('trae')) {
+          // 命中 Trae 安装目录，直接找 exe
+          for (const n of ['TRAE SOLO CN.exe', 'Trae.exe', 'TRAE.exe']) {
+            const exe = path.join(full, n);
+            if (fs.existsSync(exe)) { hit.push(exe); return; }
+          }
+        }
+        walk(full, depth + 1);
+      } else if (e.name.toLowerCase().endsWith('.exe') && looksLikeTraeExe(full)) {
+        hit.push(full); return;
+      }
+    }
+  };
+  for (const base of COMMON_INSTALL_DIRS) {
+    const root = base.replace('C:\\Users\\', process.env.USERPROFILE + '\\');
+    if (!fs.existsSync(root)) continue;
+    walk(root, 0);
+    if (hit.length) break;
+  }
+  if (hit.length) {
+    console.log(`[INFO] 自动扫描到 Trae: ${hit[0]}`);
+    return hit[0];
+  }
+  return null;
+}
+
+async function resolveTraePath() {
+  if (process.env.TRAECHECKIN_EXE) {
+    if (!fs.existsSync(process.env.TRAECHECKIN_EXE)) {
+      throw new Error(`环境变量 TRAECHECKIN_EXE 指定的路径不存在：${process.env.TRAECHECKIN_EXE}`);
+    }
+    console.log(`[INFO] 使用环境变量指定的 Trae 路径: ${process.env.TRAECHECKIN_EXE}`);
+    return process.env.TRAECHECKIN_EXE;
+  }
+
+  const found =
+    (await scanRunningProcess()) ||
+    (await scanRegistry()) ||
+    scanCommonDirs();
+
+  if (found) return found;
+
+  throw new Error(
+    '未找到 Trae SOLO CN 可执行文件。\n' +
+    '请通过环境变量指定：\n' +
+    '  set TRAECHECKIN_EXE="你的\\TRAE SOLO CN\\TRAE SOLO CN.exe"\n' +
+    '脚本会依次尝试：正在运行的进程 -> 注册表卸载项 -> 常见安装目录。'
+  );
+}
+
+const TRAE_EXE = await resolveTraePath();
 
 const DEBUG_URL = `http://localhost:${DEBUG_PORT}`;
 const WS_URL = `${DEBUG_URL}/json`;
@@ -44,7 +196,7 @@ async function ensureDebugPort() {
     throw new Error(
       `Trae 正在运行，但未开启调试端口。\n` +
       `请先关闭 Trae，然后运行：\n` +
-      `  "${TRAE_EXE}" --remote-debugging-port=${DEBUG_PORT}\n` +
+      `  "${TRAE_EXE}" ${debugLaunchArgs()}\n` +
       `或设置环境变量 TRAECHECKIN_FORCE_RELAUNCH=1 让脚本自动重启。`
     );
   }
@@ -72,7 +224,7 @@ async function isTraeRunning() {
 
 function launchTraeWithDebug() {
   // 用 start 命令脱离当前进程，避免 Node 持有子进程句柄导致关闭时 UV 断言崩溃
-  const cmd = `start "" "${TRAE_EXE}" --remote-debugging-port=${DEBUG_PORT}`;
+  const cmd = `start "" "${TRAE_EXE}" ${debugLaunchArgs()}`;
   spawn('cmd', ['/c', cmd], {
     detached: true,
     stdio: 'ignore',
@@ -173,6 +325,23 @@ async function performCheckIn(cdp) {
   console.log(`[INFO] 签到按钮状态: ${JSON.stringify(state)}`);
 
   if (state.error) {
+    // 区分"未登录"与"类名已变化"：检查账户菜单里是否出现登录入口
+    const loginHint = await evaluate(`
+      (() => {
+        const menu = document.querySelector('[class*="accountPopover"]');
+        if (!menu) return { menuOpen: false };
+        const t = (menu.textContent || '');
+        return {
+          menuOpen: true,
+          hasLogin: /登录|扫码|立即登录|手机号/.test(t),
+          sample: t.replace(/\\s+/g, ' ').slice(0, 80)
+        };
+      })()
+    `);
+    const hint = loginHint.result.result.value;
+    if (hint.menuOpen && hint.hasLogin) {
+      return { status: 'not_logged_in', detail: hint.sample };
+    }
     throw new Error('未找到每日签到按钮，可能类名已变化');
   }
 

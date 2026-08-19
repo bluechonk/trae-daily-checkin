@@ -108,11 +108,11 @@ http://localhost:9222/json
 ### 6.1 首次/手动运行
 
 ```bat
-:: 方法 A：双击 launch-with-debug.bat 启动 Trae（已带调试端口）
-:: 方法 B：如果 Trae 已经在运行但无端口，用 PowerShell 强制重启
+:: 方法 A：双击 launch-with-debug.bat 启动 Trae（已带调试端口，自动定位 Trae）
+:: 方法 B：如果 Trae 已经在运行但无端口，用 PowerShell 强制重启（自动定位）
 powershell -ExecutionPolicy Bypass -File scripts\relaunch-with-debug.ps1
 
-:: 运行签到脚本
+:: 运行签到脚本（同样会解析并定位 Trae 路径）
 node src/auto-checkin.mjs
 ```
 
@@ -120,18 +120,36 @@ node src/auto-checkin.mjs
 
 | 变量 | 作用 | 默认值 |
 |------|------|--------|
-| `TRAECHECKIN_EXE` | Trae 可执行文件路径 | `D:\Software\TRAE SOLO CN\TRAE SOLO CN.exe` |
+| `TRAECHECKIN_EXE` | Trae 可执行文件路径（不设置则自动定位） | 自动定位 |
 | `TRAECHECKIN_PORT` | CDP 调试端口 | `9222` |
 | `TRAECHECKIN_FORCE_RELAUNCH` | 已运行时强制重启 | `0` |
+| `TRAECHECKIN_USER_DATA_DIR` | 使用独立 user-data-dir（profile）启动，用于隔离测试 | 空（用默认账号） |
 
 示例：
 
 ```bat
+:: 指定自定义 Trae 路径 + 端口
+set TRAECHECKIN_EXE="D:\My Tools\TRAE SOLO CN\TRAE SOLO CN.exe"
+set TRAECHECKIN_PORT=9223
+node src/auto-checkin.mjs
+
+:: 强制重启
 set TRAECHECKIN_FORCE_RELAUNCH=1
 node src/auto-checkin.mjs
 ```
 
-### 6.3 加入 Windows 任务计划程序（每天自动执行）
+### 6.3 如何定位 Trae（自定义路径 + 自动扫描）
+
+`launch-with-debug.bat` 与 `relaunch-with-debug.ps1` 都调用共用的 `scripts\locate-trae.ps1` 定位；`src\auto-checkin.mjs` 内实现了等效的 Node 版定位。三处按同一优先级解析 Trae 可执行文件路径：
+
+1. **自定义路径**：优先使用 `TRAECHECKIN_EXE` 环境变量（或 `relaunch-with-debug.ps1` 的 `-ExePath` 参数）。
+2. **正在运行的进程**：查询系统中正在运行的 `TRAE*.exe` 主进程，取其真实可执行路径。
+3. **注册表卸载项**：扫描 `HKLM/HKCU` 卸载列表里 `DisplayName` 含 `Trae` 的安装位置。
+4. **常见安装目录**：有限深度扫描 `C:\Program Files`、`C:\Program Files (x86)`、`D:\Software` 等位置。
+
+因此别人克隆本项目后，**无需修改任何代码**即可直接运行——只要 Trae 安装在本机，无论装在哪个盘/目录都能被自动找到。
+
+### 6.4 加入 Windows 任务计划程序（每天自动执行）
 
 1. 创建基本任务，每天固定时间触发。
 2. 操作选择"启动程序"：
@@ -146,12 +164,44 @@ node src/auto-checkin.mjs
 | 退出码 | 含义 |
 |--------|------|
 | `0` | 签到成功 |
-| `1` | 失败/异常 |
+| `1` | 失败/异常（含未登录 `not_logged_in`、找不到按钮、签到后验证不通过等） |
 | `2` | 今日已签（无需重复操作） |
+
+脚本 `[RESULT]` 输出中可能出现的 `status` 值：
+
+| status | 含义 |
+|--------|------|
+| `success` | 真实点击并签到成功 |
+| `already_signed` | 今日已签 |
+| `not_logged_in` | 账户未登录（弹窗里出现"登录/扫码"等入口），需要先手动登录 |
+| `click_failed` | 找到了按钮但点击失败 |
+| `unknown` | 点击后按钮文字未变成"今日已签"，需人工查看 |
 
 ## 八、验证结果
 
-在某次测试中：
+### 8.1 端到端签到测试（9223 端口，独立新登录账号）
+
+在某次"未登录 → 手动登录"的新账号实例上，跑了一次完整的真实签到：
+
+```bat
+cd /d "D:\Projects\trae-daily-checkin" && set TRAECHECKIN_PORT=9223 && node src\auto-checkin.mjs
+```
+
+日志输出：
+
+```
+[OK] 调试端口已开放
+[INFO] 点击左下角头像...
+[INFO] 签到按钮状态: {"buttonText":"签到","title":"每日签到领 200 积分"}
+[INFO] 尝试点击签到按钮...
+[RESULT] { "status": "success", "detail": "今日已签" }
+```
+
+脚本走通了真实流程：连接新实例 CDP → 点击左下角头像弹出账户菜单 → 读到签到按钮文字为「签到」（未签状态）→ 真实点击按钮 → 验证按钮文字变成「今日已签」，退出码 `0`。
+
+### 8.2 已有账号"今日已签"状态识别
+
+另一次测试中，脚本正确识别到"今日已签"状态：
 
 - 调试端口成功打开：
   ```
@@ -168,6 +218,24 @@ node src/auto-checkin.mjs
 
 说明自动化链路完全跑通；当按钮可点击时，脚本会真实点击并完成签到。
 
+### 8.3 独立 profile 测试（不干扰主账号）
+
+Electron 默认单实例：如果 Trae 已在运行，再带端口启动新实例不会生效。为了在一个"干净的新账号"上验证，而不影响主账号，可以用**独立的 user-data-dir（profile）**：
+
+```bat
+:: 1) 指定一个独立的 profile 目录，端口也用独立的
+set TRAECHECKIN_USER_DATA_DIR="D:\temp\trae-test-profile"
+set TRAECHECKIN_PORT=9223
+set TRAECHECKIN_FORCE_RELAUNCH=1
+
+:: 2) 运行脚本（会以独立 profile 启动一个新的 Trae 实例，未登录）
+node src/auto-checkin.mjs
+```
+
+首次运行会用独立 profile 打开一个全新窗口，需**手动登录一次**（该登录态只保存在这个独立 profile 里，不影响主账号）。之后再运行脚本即可完成真实签到。验证过程中，主账号（9222 端口）全程不受影响。
+
+> 说明：此方式是"带端口启动已在运行的 Trae 无效"限制的绕过手段——不同 `--user-data-dir` 会被 Electron 视为不同实例，因此可以和主账号并存。
+
 ## 九、已知限制与注意事项
 
 1. **CSS 类名可能随更新变化**：脚本使用 `class*="前缀"` 匹配，但仍需在 Trae 更新后抽查一次。
@@ -181,11 +249,12 @@ node src/auto-checkin.mjs
 trae-daily-checkin/
 ├── package.json                  # 项目元数据
 ├── README.md                     # 本文件
-├── launch-with-debug.bat         # 双击启动 Trae（带调试端口）
+├── launch-with-debug.bat         # 双击启动 Trae（带调试端口，自动定位路径）
 ├── scripts/
-│   └── relaunch-with-debug.ps1   # 强制重启 Trae 并开放端口
+│   ├── locate-trae.ps1           # 通用定位 Trae 路径（进程/注册表/常见目录，可单独调用）
+│   └── relaunch-with-debug.ps1   # 强制重启 Trae 并开放端口（复用 locate-trae.ps1 定位）
 └── src/
-    └── auto-checkin.mjs          # 自动签到主脚本
+    └── auto-checkin.mjs          # 自动签到主脚本（Node 版路径定位：自定义/自动扫描）
 ```
 
 ## 十一、后续可扩展
