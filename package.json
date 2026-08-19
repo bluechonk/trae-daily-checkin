@@ -1,0 +1,17 @@
+{
+  "name": "trae-daily-checkin",
+  "version": "1.0.0",
+  "description": "Trae SOLO CN 每日签到自动化脚本（基于 Chrome DevTools Protocol）",
+  "type": "module",
+  "main": "src/auto-checkin.mjs",
+  "scripts": {
+    "start": "node src/auto-checkin.mjs",
+    "relaunch": "powershell -ExecutionPolicy Bypass -File scripts/relaunch-with-debug.ps1"
+  },
+  "keywords": ["trae", "electron", "cdp", "automation", "checkin"],
+  "author": "Cecilia",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
