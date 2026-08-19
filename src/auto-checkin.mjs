@@ -98,7 +98,8 @@ function looksLikeTraeExe(p) {
 
 async function runPs(script) {
   return new Promise((resolve) => {
-    const p = spawn('powershell', ['-NoProfile', '-Command', script], { shell: true });
+    // 不加 shell：直接以参数数组启动 powershell.exe，避免 cmd 解析特殊字符 & DEP0190 警告
+    const p = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script]);
     let out = '';
     p.stdout.on('data', d => out += d.toString());
     p.on('close', () => resolve(out.trim()));
@@ -269,7 +270,7 @@ async function isPortOpen() {
 async function isTraeRunning() {
   const cmd = `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '*TRAE SOLO CN*' } | Select-Object ProcessId`;
   return new Promise((resolve, reject) => {
-    const p = spawn('powershell', ['-NoProfile', '-Command', cmd], { shell: true });
+    const p = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd]);
     let out = '';
     p.stdout.on('data', d => out += d.toString());
     p.on('close', () => resolve(/ProcessId/.test(out) && out.trim().split('\n').length > 1));
@@ -290,7 +291,7 @@ function launchTraeWithDebug() {
 async function closeTrae() {
   const cmd = `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '*TRAE SOLO CN*' -or $_.Name -eq 'agent-tool-host.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
   return new Promise((resolve, reject) => {
-    const p = spawn('powershell', ['-NoProfile', '-Command', cmd], { shell: true });
+    const p = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd]);
     p.on('close', () => resolve());
     p.on('error', reject);
   });
