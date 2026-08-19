@@ -163,16 +163,38 @@ node src/auto-checkin.mjs
 
 因此别人克隆本项目后，**无需修改任何代码**即可直接运行——只要 Trae 安装在本机，无论装在哪个盘/目录都能被自动找到。
 
-### 6.4 加入 Windows 任务计划程序（每天自动执行）
+### 6.4 每日自动签到（Windows 任务计划）
 
-1. 创建基本任务，每天固定时间触发。
+**方式一：一键脚本（推荐）**
+
+```bat
+:: 安装：默认每天 12:00 签到
+install-schedule.bat
+
+:: 自定义时间（24 小时制），例如每天 09:30
+install-schedule.bat 09:30
+
+:: 卸载
+uninstall-schedule.bat
+```
+
+脚本会自动用 `schtasks` 注册名为 `TraeDailyCheckin` 的任务，每天定时执行：
+
+```
+node "项目目录\src\auto-checkin.mjs" --force --close
+```
+
+- `--force`：Trae 已在前台运行也能带端口重启
+- `--close`：签到完成后关闭 Trae，避免常驻占用资源
+
+**方式二：手动配置**
+
+1. 打开"任务计划程序" → 创建基本任务，每天固定时间触发。
 2. 操作选择"启动程序"，程序设为：
    `node "D:\Projects\trae-daily-checkin\src\auto-checkin.mjs" --force --close`
-   - `--force`：Trae 已在前台运行也能带端口重启
-   - `--close`：签到完成后关闭 Trae，避免常驻占用资源
 3. 建议签到时间设为开机后或午休时间，并勾选"无论用户是否登录都要运行"（需要保存密码）。
 
-> 如果希望签到后 Trae 保持打开（正常使用时），不加 `--close` 即可。
+> 如果希望签到后 Trae 保持打开（正常使用时），命令去掉 `--close` 即可。
 
 ## 七、退出码说明
 
@@ -260,6 +282,8 @@ trae-daily-checkin/
 ├── package.json                  # 项目元数据
 ├── README.md                     # 本文件
 ├── launch-with-debug.bat         # 双击启动 Trae（带调试端口，自动定位路径）
+├── install-schedule.bat          # 一键注册"每日自动签到"任务计划
+├── uninstall-schedule.bat        # 删除"每日自动签到"任务计划
 ├── scripts/
 │   ├── locate-trae.ps1           # 通用定位 Trae 路径（进程/注册表/常见目录，可单独调用）
 │   └── relaunch-with-debug.ps1   # 强制重启 Trae 并开放端口（复用 locate-trae.ps1 定位）

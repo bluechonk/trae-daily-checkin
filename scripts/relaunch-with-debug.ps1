@@ -10,8 +10,12 @@ param(
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# 复用 locate-trae.ps1 的定位逻辑
-$locateResult = & powershell -NoProfile -ExecutionPolicy Bypass -File "$ScriptDir\locate-trae.ps1" -ExePath $ExePath 2>$null
+# 复用 locate-trae.ps1 的定位逻辑（ExePath 为空时不要传 -ExePath 参数）
+if ($ExePath) {
+  $locateResult = & powershell -NoProfile -ExecutionPolicy Bypass -File "$ScriptDir\locate-trae.ps1" -ExePath $ExePath 2>$null
+} else {
+  $locateResult = & powershell -NoProfile -ExecutionPolicy Bypass -File "$ScriptDir\locate-trae.ps1" 2>$null
+}
 if ($LASTEXITCODE -ne 0 -or -not $locateResult) {
   throw "未找到 Trae 可执行文件。请通过 -ExePath 或环境变量 TRAECHECKIN_EXE 指定。"
 }
