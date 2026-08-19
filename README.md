@@ -105,7 +105,37 @@ http://localhost:9222/json
 
 ## 六、使用方式
 
-### 6.1 首次/手动运行
+### 6.1 命令行参数（推荐用法）
+
+```bat
+:: 最简单：自动定位 Trae，默认端口 9222
+node src/auto-checkin.mjs
+
+:: 指定 Trae 路径 + 自定义端口
+node src/auto-checkin.mjs --dir "D:\My Tools\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223
+
+:: Trae 已在运行但无调试端口时，强制重启
+node src/auto-checkin.mjs --force
+
+:: 独立 profile 隔离测试（不干扰主账号）
+node src/auto-checkin.mjs --dir "D:\My Tools\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223 --force --profile "D:\temp\trae-test-profile"
+
+:: 查看全部参数说明
+node src/auto-checkin.mjs --help
+```
+
+参数一览：
+
+| 参数 | 作用 | 默认值 |
+|------|------|--------|
+| `--dir <path>` / `--exe <path>` | Trae 可执行文件路径（不传则自动扫描定位） | 自动定位 |
+| `--port <n>` | CDP 调试端口 | `9222` |
+| `--force` | 已运行但无调试端口时强制重启（也可 `--force 1`） | 关 |
+| `--profile <path>` | 使用独立 user-data-dir（profile）启动，用于隔离测试 | 默认账号 |
+
+> 兼容旧用法：以上参数均有对应环境变量 `TRAECHECKIN_EXE` / `TRAECHECKIN_PORT` / `TRAECHECKIN_FORCE_RELAUNCH` / `TRAECHECKIN_USER_DATA_DIR`，但**命令行参数优先级更高**。实际优先级：`命令行参数 > 环境变量 > 自动扫描定位`。
+
+### 6.2 首次/手动运行
 
 ```bat
 :: 方法 A：双击 launch-with-debug.bat 启动 Trae（已带调试端口，自动定位 Trae）
@@ -116,33 +146,11 @@ powershell -ExecutionPolicy Bypass -File scripts\relaunch-with-debug.ps1
 node src/auto-checkin.mjs
 ```
 
-### 6.2 环境变量
-
-| 变量 | 作用 | 默认值 |
-|------|------|--------|
-| `TRAECHECKIN_EXE` | Trae 可执行文件路径（不设置则自动定位） | 自动定位 |
-| `TRAECHECKIN_PORT` | CDP 调试端口 | `9222` |
-| `TRAECHECKIN_FORCE_RELAUNCH` | 已运行时强制重启 | `0` |
-| `TRAECHECKIN_USER_DATA_DIR` | 使用独立 user-data-dir（profile）启动，用于隔离测试 | 空（用默认账号） |
-
-示例：
-
-```bat
-:: 指定自定义 Trae 路径 + 端口
-set TRAECHECKIN_EXE="D:\My Tools\TRAE SOLO CN\TRAE SOLO CN.exe"
-set TRAECHECKIN_PORT=9223
-node src/auto-checkin.mjs
-
-:: 强制重启
-set TRAECHECKIN_FORCE_RELAUNCH=1
-node src/auto-checkin.mjs
-```
-
 ### 6.3 如何定位 Trae（自定义路径 + 自动扫描）
 
 `launch-with-debug.bat` 与 `relaunch-with-debug.ps1` 都调用共用的 `scripts\locate-trae.ps1` 定位；`src\auto-checkin.mjs` 内实现了等效的 Node 版定位。三处按同一优先级解析 Trae 可执行文件路径：
 
-1. **自定义路径**：优先使用 `TRAECHECKIN_EXE` 环境变量（或 `relaunch-with-debug.ps1` 的 `-ExePath` 参数）。
+1. **自定义路径**：优先使用命令行参数 `--dir/--exe`（或 `TRAECHECKIN_EXE` 环境变量、`relaunch-with-debug.ps1` 的 `-ExePath` 参数）。
 2. **正在运行的进程**：查询系统中正在运行的 `TRAE*.exe` 主进程，取其真实可执行路径。
 3. **注册表卸载项**：扫描 `HKLM/HKCU` 卸载列表里 `DisplayName` 含 `Trae` 的安装位置。
 4. **常见安装目录**：有限深度扫描 `C:\Program Files`、`C:\Program Files (x86)`、`D:\Software` 等位置。
@@ -154,10 +162,10 @@ node src/auto-checkin.mjs
 1. 创建基本任务，每天固定时间触发。
 2. 操作选择"启动程序"：
    - 程序：`D:\Projects\trae-daily-checkin\launch-with-debug.bat`
-   - 或先启动 Trae，再运行 `node src/auto-checkin.mjs`
+   - 或先启动 Trae，再运行 `node src/auto-checkin.mjs --force`
 3. 建议签到时间设为开机后或午休时间，并勾选"无论用户是否登录都要运行"（需要保存密码）。
 
-> 注意：任务计划里使用 `TRAECHECKIN_FORCE_RELAUNCH=1` 更省心，因为 Trae 可能已经在前台运行。
+> 注意：任务计划里加 `--force` 参数更省心，因为 Trae 可能已经在前台运行（例如：`node src\auto-checkin.mjs --force`）。
 
 ## 七、退出码说明
 
@@ -223,13 +231,8 @@ cd /d "D:\Projects\trae-daily-checkin" && set TRAECHECKIN_PORT=9223 && node src\
 Electron 默认单实例：如果 Trae 已在运行，再带端口启动新实例不会生效。为了在一个"干净的新账号"上验证，而不影响主账号，可以用**独立的 user-data-dir（profile）**：
 
 ```bat
-:: 1) 指定一个独立的 profile 目录，端口也用独立的
-set TRAECHECKIN_USER_DATA_DIR="D:\temp\trae-test-profile"
-set TRAECHECKIN_PORT=9223
-set TRAECHECKIN_FORCE_RELAUNCH=1
-
-:: 2) 运行脚本（会以独立 profile 启动一个新的 Trae 实例，未登录）
-node src/auto-checkin.mjs
+:: 指定独立 profile + 独立端口，并强制重启到新实例（未登录）
+node src/auto-checkin.mjs --port 9223 --force --profile "D:\temp\trae-test-profile"
 ```
 
 首次运行会用独立 profile 打开一个全新窗口，需**手动登录一次**（该登录态只保存在这个独立 profile 里，不影响主账号）。之后再运行脚本即可完成真实签到。验证过程中，主账号（9222 端口）全程不受影响。

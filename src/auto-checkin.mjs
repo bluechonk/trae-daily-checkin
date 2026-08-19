@@ -7,11 +7,61 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const DEBUG_PORT = Number(process.env.TRAECHECKIN_PORT || 9222);
-const FORCE_RELAUNCH = process.env.TRAECHECKIN_FORCE_RELAUNCH === '1' || process.argv.includes('--force');
-// 可选：使用独立 user-data-dir（profile），用于在"另一个全新登录环境"上测试，不干扰主账号。
-// 例：set TRAECHECKIN_USER_DATA_DIR="D:\temp\trae-test-profile"
-const USER_DATA_DIR = process.env.TRAECHECKIN_USER_DATA_DIR?.trim() || '';
+// -------------------------------------------------------------
+// 0. 解析命令行参数（优先）与环境变量（回退）
+//    用法：
+//      node src/auto-checkin.mjs
+//      node src/auto-checkin.mjs --port 9223 --force
+//      node src/auto-checkin.mjs --dir "D:\Tools\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223 --profile "D:\temp\trae-test-profile"
+//    参数：
+//      --exe / --dir <path>   Trae 可执行文件路径（不传则自动扫描定位）
+//      --port <n>             CDP 调试端口（默认 9222）
+//      --force                已运行但无调试端口时强制重启 Trae（也可 --force 1）
+//      --profile <path>       使用独立 user-data-dir（profile）启动，隔离测试用
+//      -h, --help             显示帮助
+// -------------------------------------------------------------
+function parseOptions() {
+  const argv = process.argv.slice(2);
+  const argValue = (name) => {
+    const i = argv.indexOf(`--${name}`);
+    return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
+  };
+  return {
+    help: argv.includes('--help') || argv.includes('-h'),
+    exe: argValue('exe') || argValue('dir') || process.env.TRAECHECKIN_EXE?.trim() || '',
+    port: Number(argValue('port') || process.env.TRAECHECKIN_PORT || 9222),
+    force: argv.includes('--force') || argValue('force') === '1' || process.env.TRAECHECKIN_FORCE_RELAUNCH === '1',
+    profile: argValue('profile') || argValue('user-data-dir') || process.env.TRAECHECKIN_USER_DATA_DIR?.trim() || '',
+  };
+}
+
+const OPTS = parseOptions();
+
+if (OPTS.help) {
+  console.log(`用法：
+  node src/auto-checkin.mjs [选项]
+
+选项：
+  --exe / --dir <path>   Trae 可执行文件路径（不传则自动扫描定位）
+  --port <n>             CDP 调试端口（默认 9222）
+  --force                已运行但无调试端口时强制重启 Trae（也可 --force 1）
+  --profile <path>       使用独立 user-data-dir（profile）启动，隔离测试用
+  -h, --help             显示帮助
+
+示例：
+  node src/auto-checkin.mjs
+  node src/auto-checkin.mjs --port 9223 --force
+  node src/auto-checkin.mjs --dir "D:\\Tools\\TRAE SOLO CN\\TRAE SOLO CN.exe" --port 9223 --profile "D:\\temp\\trae-test-profile"
+
+优先级说明：命令行参数 > 环境变量 > 自动扫描定位。
+`);
+  process.exit(0);
+}
+
+const DEBUG_PORT = OPTS.port;
+const FORCE_RELAUNCH = OPTS.force;
+const USER_DATA_DIR = OPTS.profile;
+const CLI_EXE = OPTS.exe;
 
 // 启动调试端口时追加的参数（独立 profile 用）
 function debugLaunchArgs() {
@@ -136,12 +186,12 @@ function scanCommonDirs(maxDepth = 3) {
 }
 
 async function resolveTraePath() {
-  if (process.env.TRAECHECKIN_EXE) {
-    if (!fs.existsSync(process.env.TRAECHECKIN_EXE)) {
-      throw new Error(`环境变量 TRAECHECKIN_EXE 指定的路径不存在：${process.env.TRAECHECKIN_EXE}`);
+  if (CLI_EXE) {
+    if (!fs.existsSync(CLI_EXE)) {
+      throw new Error(`--exe/--dir 指定的路径不存在：${CLI_EXE}`);
     }
-    console.log(`[INFO] 使用环境变量指定的 Trae 路径: ${process.env.TRAECHECKIN_EXE}`);
-    return process.env.TRAECHECKIN_EXE;
+    console.log(`[INFO] 使用命令行指定的 Trae 路径: ${CLI_EXE}`);
+    return CLI_EXE;
   }
 
   const found =
@@ -153,8 +203,8 @@ async function resolveTraePath() {
 
   throw new Error(
     '未找到 Trae SOLO CN 可执行文件。\n' +
-    '请通过环境变量指定：\n' +
-    '  set TRAECHECKIN_EXE="你的\\TRAE SOLO CN\\TRAE SOLO CN.exe"\n' +
+    '请通过命令行参数指定：\n' +
+    '  node src/auto-checkin.mjs --dir "你的\\TRAE SOLO CN\\TRAE SOLO CN.exe"\n' +
     '脚本会依次尝试：正在运行的进程 -> 注册表卸载项 -> 常见安装目录。'
   );
 }
@@ -197,7 +247,7 @@ async function ensureDebugPort() {
       `Trae 正在运行，但未开启调试端口。\n` +
       `请先关闭 Trae，然后运行：\n` +
       `  "${TRAE_EXE}" ${debugLaunchArgs()}\n` +
-      `或设置环境变量 TRAECHECKIN_FORCE_RELAUNCH=1 让脚本自动重启。`
+      `或加 --force 参数让脚本自动重启：node src/auto-checkin.mjs --force`
     );
   }
 }
