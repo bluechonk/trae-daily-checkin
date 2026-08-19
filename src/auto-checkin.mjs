@@ -217,7 +217,8 @@ async function resolveTraePath() {
 
 const TRAE_EXE = await resolveTraePath();
 
-const DEBUG_URL = `http://localhost:${DEBUG_PORT}`;
+// 强制使用 127.0.0.1（IPv4）：避免 localhost 优先解析到 IPv6，导致连到其它也监听 9222 的应用（如豆包）
+const DEBUG_URL = `http://127.0.0.1:${DEBUG_PORT}`;
 const WS_URL = `${DEBUG_URL}/json`;
 
 // -------------------------------------------------------------
@@ -360,7 +361,12 @@ async function performCheckIn(cdp) {
         return false;
       })()
     `);
-    await sleep(1000);
+    // 菜单渲染可能需要时间，轮询等待最多 5 秒
+    for (let i = 0; i < 10; i++) {
+      await sleep(500);
+      const open = await evaluate(`!!document.querySelector('[class*="accountPopover"]')`);
+      if (open.result.result.value) break;
+    }
   } else {
     console.log('[INFO] 账户菜单已经打开');
   }
