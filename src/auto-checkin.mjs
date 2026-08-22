@@ -12,7 +12,7 @@ import path from 'node:path';
 //    用法：
 //      node src/auto-checkin.mjs
 //      node src/auto-checkin.mjs --port 9223 --force
-//      node src/auto-checkin.mjs --dir "D:\Tools\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223 --profile "D:\temp\trae-test-profile"
+//      node src/auto-checkin.mjs --dir "C:\Program Files\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223 --profile "%TEMP%\trae-test-profile"
 //    参数：
 //      --exe / --dir <path>   Trae 可执行文件路径（不传则自动扫描定位）
 //      --port <n>             CDP 调试端口（默认 9222）

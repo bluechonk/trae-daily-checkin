@@ -14,7 +14,7 @@ Trae SOLO CN（字节跳动面向中文用户的 AI IDE）每天点击左下角�
 
 ## 二、关键判断：它是不是"套壳 Web"？
 
-打开安装目录 `D:\Software\TRAE SOLO CN` 检查：
+打开安装目录 `C:\Program Files\TRAE SOLO CN` 检查：
 
 | 发现 | 含义 |
 |------|------|
@@ -35,7 +35,7 @@ Electron 应用本质上就是 Chromium。Chromium 提供 **远程调试协议�
 启动时加上 Chromium 参数：
 
 ```bat
-"D:\Software\TRAE SOLO CN\TRAE SOLO CN.exe" --remote-debugging-port=9222
+"C:\Program Files\TRAE SOLO CN\TRAE SOLO CN.exe" --remote-debugging-port=9222
 ```
 
 > 注：上述路径仅为示例。现在脚本会自动定位 Trae 可执行文件（见 6.3），无需手动填写路径。
@@ -114,13 +114,13 @@ http://localhost:9222/json
 node src/auto-checkin.mjs
 
 :: 指定 Trae 路径 + 自定义端口
-node src/auto-checkin.mjs --dir "D:\My Tools\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223
+node src/auto-checkin.mjs --dir "C:\Program Files\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223
 
 :: Trae 已在运行但无调试端口时，强制重启
 node src/auto-checkin.mjs --force
 
 :: 独立 profile 隔离测试（不干扰主账号）
-node src/auto-checkin.mjs --dir "D:\My Tools\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223 --force --profile "D:\temp\trae-test-profile"
+node src/auto-checkin.mjs --dir "C:\Program Files\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223 --force --profile "%TEMP%\trae-test-profile"
 
 :: 签到完成后自动关闭 Trae（适合无人值守/任务计划场景）
 node src/auto-checkin.mjs --force --close
@@ -159,7 +159,7 @@ node src/auto-checkin.mjs
 1. **自定义路径**：优先使用命令行参数 `--dir/--exe`（或 `TRAECHECKIN_EXE` 环境变量、`relaunch-with-debug.ps1` 的 `-ExePath` 参数）。
 2. **正在运行的进程**：查询系统中正在运行的 `TRAE*.exe` 主进程，取其真实可执行路径。
 3. **注册表卸载项**：扫描 `HKLM/HKCU` 卸载列表里 `DisplayName` 含 `Trae` 的安装位置。
-4. **常见安装目录**：有限深度（3 层）扫描以下位置：`C:\Program Files`、`C:\Program Files (x86)`、`D:\Program Files`、`D:\Software`、`E:\Software`、`D:\`、`%USERPROFILE%`。
+4. **常见安装目录**：有限深度（3 层）扫描以下位置：`C:\Program Files`、`C:\Program Files (x86)`、`%LOCALAPPDATA%\Programs`、`%USERPROFILE%`。
 
 因此别人克隆本项目后，**无需修改任何代码**即可直接运行——只要 Trae 安装在本机，无论装在哪个盘/目录都能被自动找到。
 

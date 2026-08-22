@@ -1,4 +1,4 @@
-﻿# scripts/locate-trae.ps1
+# scripts/locate-trae.ps1
 # 定位 Trae 可执行文件路径（仅供其它脚本调用，不执行任何启动/关闭操作）
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File scripts\locate-trae.ps1
@@ -60,7 +60,7 @@ foreach ($r in $roots) {
 # 3) 常见安装目录（有限深度扫描）
 $bases = @(
   'C:\Program Files', 'C:\Program Files (x86)',
-  'D:\Program Files', 'D:\Software', 'E:\Software',
+  "$env:LOCALAPPDATA\Programs",
   "$env:USERPROFILE"
 )
 foreach ($base in $bases) {
