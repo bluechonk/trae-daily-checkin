@@ -68,19 +68,27 @@ http://localhost:9222/json
 
 ## 四、定位关键元素
 
-连接 CDP 后，在页面里执行 JS 来查找元素。实际探查到的关键选择器（2026-10-23 于 TraeCN 1.107.1 复核）：
+连接 CDP 后，在页面里执行 JS 来查找元素。实际探查到的关键选择器（2026-10-23 于 TraeCN 1.107.1 复核）。
 
-| 元素 | 选择器/特征 |
-|------|-------------|
-| 左下角头像入口 | 类名前缀 `accountTrigger`，文本包含用户名的 `<button>` |
-| 账户弹窗容器 | 类名前缀 `accountPopover`、`accountCard`（关闭时从 DOM 卸载） |
-| 每日签到行 | 类名前缀 `accountCheckinSlot`（标题随活动变化，如"签到抽百万积分"） |
-| 签到按钮 | 类名前缀 `accountCheckinButton`；已签时 `disabled=true` |
-| 签到按钮文字 | 类名前缀 `accountCheckinButtonLabel`；未签"签到"，已签"已签到" |
+Trae CN 有两种模式，签到入口不同，脚本按"solo-lite 优先、workbench 其次"逐页探测：
+
+| 模式 | 主窗口 target | 签到入口 |
+|------|--------------|----------|
+| Agent 模式（Build With TRAE） | `solo/solo-lite.html` | 左下角头像 → 账户菜单 |
+| IDEA 模式（SOLO 编辑器） | `workbench/workbench.html` | 右上角自动弹的签到横幅 |
+
+| 元素 | 选择器/特征 | 模式 |
+|------|-------------|------|
+| 头像入口 | 类名前缀 `accountTrigger` | Agent |
+| 账户弹窗容器 | 类名前缀 `accountPopover`、`accountCard`（关闭时从 DOM 卸载） | Agent |
+| 签到按钮（菜单） | 类名前缀 `accountCheckinButton`；已签时 `disabled=true` | Agent |
+| 签到按钮文字 | 类名前缀 `accountCheckinButtonLabel`；未签"签到"，已签"已签到" | Agent |
+| 签到横幅按钮 | 类名前缀 `commercialBannerPopupPrimaryAction`（临时弹窗，关闭后消失） | IDEA |
+| 模式切换按钮 | 类名前缀 `icube-open-solo-lite-window-button`（"Agent ↗"，横幅消失时的兜底入口） | IDEA |
 
 由于 CSS 类名是工具生成的哈希后缀（如 `accountCheckinButton-hoMtQt`），脚本里使用 `*[class*="accountCheckinButton"]` 这种前缀匹配，比完全固定类名更抗更新。
 
-状态判定以按钮 `disabled` 属性和文本双重校验：`disabled=true` 或文本含"已签"即今日已签。
+状态判定以按钮 `disabled` 属性和文本双重校验：`disabled=true` 或文本含"已签"即今日已签。IDEA 模式横幅被关闭后，脚本会点击 IDEA 窗口右上角的"Agent ↗"按钮打开 Agent 窗口，再走头像菜单流程完成签到。
 
 ## 五、核心脚本设计
 
@@ -94,13 +102,15 @@ http://localhost:9222/json
    ├─ 未运行：自动启动 Trae（带调试端口）
    └─ 已运行但无端口：安全报错，或加 --force 参数强制重启
 
-2. 连接 CDP，定位 workbench page
+2. 列出全部 CDP page target，按 solo-lite（Agent 模式）> workbench（IDEA 模式）排序逐页探测
 
-3. 点击左下角头像打开账户菜单（状态感知，避免重复点击关闭菜单）
+3. 读取签到入口状态
+   ├─ Agent 模式：点头像打开账户菜单（状态感知 + 失败重试），读菜单内按钮
+   ├─ IDEA 模式：直接读右上角签到横幅按钮
+   ├─ disabled 或文本含"已签" → 今日已签，退出码 2
+   └─ 否则 → 点击按钮，等待 2 秒后验证文本/disabled 变化
 
-4. 在菜单中查找"每日签到"行，读取右侧按钮文本
-   ├─ 文本包含"已签" → 今日已签，退出码 2
-   └─ 否则 → 点击按钮，等待 2 秒后验证文本是否变为"今日已签"
+4. IDEA 模式无入口（横幅已关闭）时：点击"Agent ↗"打开 Agent 窗口，重新探测
 
 5. 输出结果并关闭 CDP 连接（加 --close 参数时再关闭 Trae 进程）
 ```
@@ -307,10 +317,19 @@ node src/auto-checkin.mjs --port 9223 --force --profile "D:\temp\trae-test-profi
 | `--profile` 误杀主实例 | 独立 profile 与主实例并存是设计目标，但旧逻辑把"有 Trae 在运行"当冲突，`--force` 会连主账号实例一起杀 | profile 模式跳过运行检测，直接启动新实例 |
 | `readdirSync` 无保护 | 扫描 Trae 目录内容时权限拒绝会抛未捕获异常 | 补 try/catch |
 
-另有两个 agent-browser 实操结论，已写入技能文档 `.agents/skills/trae-checkin/SKILL.md`：
+### 第三轮：双模式支持（Agent / IDEA）
 
-1. 原生鼠标事件（`agent-browser click`）会被工作台遮挡层拦截（`Element is covered by <div>`），必须用 `eval` 执行 DOM 合成点击 `el.click()`。
-2. Trae 冷启动时 UI 事件未挂载，点击头像无效，需要轮询加重试。技能文档的 `tab --url <pattern>` 在当前 CLI 版本不可用，按 tab 编号切换（`tab t1`）。
+| Bug | 现象 | 修复 |
+|-----|------|------|
+| 只支持 Agent 模式 | Trae CN 启动后可能直接落在 IDEA 模式（`workbench.html`），其 DOM 没有 `account*` 类，脚本报"未找到签到按钮" | 新增 IDEA 模式入口：右上角签到横幅 `commercialBannerPopupPrimaryAction`，判定逻辑与菜单一致 |
+| IDEA 横幅是一次性弹窗 | 横幅被关闭后 IDEA 模式无任何签到入口 | 兜底点击 IDEA 窗口右上角"Agent ↗"（`icube-open-solo-lite-window-button`）打开 Agent 窗口重新探测；实测按钮即使 `display:none` 合成点击依然有效 |
+| 兜底逻辑短路 | `performCheckIn` 返回 `no_entry` 对象后 `!result` 恒为假，第二轮兜底永不触发 | 探测失败时把 `result` 清回 `null` |
+
+### agent-browser 实操结论，已写入技能文档 `.agents/skills/trae-checkin/SKILL.md` 与 `.agents/skills/agent-browser/SKILL.md`：
+
+1. 原生鼠标事件（`agent-browser click`）会被工作台遮挡层拦截（`Element is covered by <div>`），必须用 `eval` 执行 DOM 合成点击 `el.click()`；对 `display:none` 元素同样有效。
+2. Trae 冷启动时 UI 事件未挂载，点击头像无效，需要轮询加重试。
+3. `tab --url <pattern>` 在当前 CLI 版本（0.39.2）不可用，按 tab 编号切换（`tab t1`）。技能文档的 `tab --url <pattern>` 在当前 CLI 版本不可用，按 tab 编号切换（`tab t1`）。
 
 ## 十一、项目文件说明
 

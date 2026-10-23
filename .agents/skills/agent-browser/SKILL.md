@@ -53,9 +53,9 @@ agent-browser --cdp 9222 snapshot -i   # 或每条命令显式指定
 
 ## 关键坑（实测结论）
 
-1. **多 target 必须选主工作台**。Trae 暴露悬浮球（`floatingButton.html`）和主窗口（`solo-lite.html`）等多个 page，`tab` 列表里认准 URL，别默认取第一个。
-2. **真实鼠标点击会被遮挡层拦截**。对 Trae 头像按钮执行 `click @eN` 报 `Element '@eN' is covered by <div>`，Input 事件命中检测过不去；改用 `eval` 执行 DOM 合成点击 `el.click()`，绕过命中检测，实测可靠。
-3. **eval 里查属性用 `[class*="前缀"]`**。Trae 的 CSS 类名带哈希后缀（如 `accountCheckinButton-hoMtQt`），精确类名跨版本必挂。
+1. **双模式多 target 必须逐页探测**。Trae CN 有两种模式：Agent 模式（`solo-lite.html`）与 IDEA 模式（`workbench.html`），加上悬浮球（`floatingButton.html`）同时挂在 `tab` 列表里，签到入口的 DOM 类名完全不同。别默认取第一个 target：`tab` 列出全部，逐个切换探测目标元素（本仓库脚本按 solo-lite 优先、workbench 其次排序探测，见 `listPageTargets`）。
+2. **真实鼠标点击会被遮挡层拦截**。对 Trae 头像执行 `agent-browser click @eN` 报 `Element is covered by <div>`——Input 事件命中检测过不去。改用 `eval` 执行 DOM 合成点击 `el.click()`，绕过命中检测，实测可靠；甚至对 `display:none` 的元素（如 IDEA→Agent 的 `icube-open-solo-lite-window-button` 切换按钮）合成点击依然生效。
+3. **eval 里查属性用 `[class*="前缀"]`**。Trae 的 CSS 类名带哈希后缀（如 `accountCheckinButton-hoMtQt`），精确类名跨版本必挂；IDEA 模式用的是 styled-components 命名（如 `index-module__commercialBannerPopupPrimaryAction___Za7Dg`），同理只匹配语义前缀。
 4. **eval 的引号转义**。bash 双引号内写 `document.querySelector('[class*=\"accountTrigger\"]')`，内层引号要 `\"`。
 5. **冷启动时序**。Electron 刚启动时 UI 事件未挂载，点击可能无效——轮询等待 + 重试 2-3 轮（本仓库 `performCheckIn` 的实现可参考）。
 

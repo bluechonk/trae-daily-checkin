@@ -370,27 +370,29 @@ async function ensureDebugPort() {
 
 // -------------------------------------------------------------
 // 4. CDP 连接
-//    关键修复：多 page target 下必须选主工作台。
-//    实测 Electron 会有 floatingButton.html（悬浮球）等干扰 target，
-//    旧版取第一个 page 导致"找不到签到按钮"。
+//    Trae CN 有两种模式，签到入口不同：
+//      - Agent 模式（solo-lite.html）：点头像弹菜单，按钮类名 accountCheckinButton
+//      - IDEA 模式（workbench.html）：右上角自动弹签到横幅，按钮类名 commercialBannerPopupPrimaryAction
+//    因此不能只连一个 target：列出全部 page，按优先级逐个探测有签到入口的页面。
 // -------------------------------------------------------------
-async function connectCDP() {
+function pagePriority(url) {
+  if (/solo-lite\.html/i.test(url)) return 2;
+  if (/workbench\.html/i.test(url)) return 1;
+  return 0;
+}
+
+async function listPageTargets() {
   const res = await fetch(`${DEBUG_URL}/json`);
   const data = await res.json();
   if (!Array.isArray(data)) {
     throw new Error(`CDP /json 返回异常数据，端口 ${DEBUG_PORT} 可能被其它应用占用（请用 --port 换端口）`);
   }
-  const targets = data;
-  const pages = targets.filter(t => t.type === 'page');
-  if (!pages.length) {
-    throw new Error('未找到 page 类型的 CDP target');
-  }
-  const pageTarget =
-    pages.find(t => /solo-lite\.html|workbench\.html/i.test(t.url)) ||
-    pages.find(t => /vscode-file:/i.test(t.url)) ||
-    pages[0];
-  console.log(`[INFO] 连接主窗口: ${pageTarget.title || pageTarget.url}`);
+  return data
+    .filter(t => t.type === 'page')
+    .sort((a, b) => pagePriority(b.url) - pagePriority(a.url));
+}
 
+async function connectPage(pageTarget) {
   const ws = new WebSocket(pageTarget.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     ws.addEventListener('open', resolve);
@@ -418,60 +420,93 @@ async function connectCDP() {
 }
 
 // -------------------------------------------------------------
-// 5. DOM 操作：打开账户菜单、检测并点击签到
+// 5. DOM 操作：按页面探测签到入口并点击
+//    入口 A（Agent 模式 solo-lite）：点头像 -> 菜单 accountPopover -> accountCheckinButton
+//    入口 B（IDEA 模式 workbench）：右上角自动弹的签到横幅 commercialBannerPopupPrimaryAction
+//    两种入口的判定一致：按钮 disabled 或文本含"已签"即今日已签。
 //    注意：必须用 DOM 合成点击 el.click()。
-//    实测 agent-browser / CDP 的原生鼠标事件会被浮层遮挡拦截，
-//    头像按钮永远点不中，合成点击不受影响。
+//    实测 CDP 的原生鼠标事件会被浮层遮挡拦截，合成点击不受影响。
 // -------------------------------------------------------------
+async function clickAndVerify(cdp, selector) {
+  const { evaluate } = cdp;
+  console.log('[INFO] 尝试点击签到按钮...');
+  const clicked = await evaluate(`(() => {
+    const btn = document.querySelector('${selector}');
+    if (!btn || btn.disabled) return false;
+    btn.click();
+    return true;
+  })()`);
+  if (!clicked.result.result.value) {
+    return { status: 'click_failed' };
+  }
+  await sleep(2000);
+  const verify = await evaluate(`(() => {
+    const btn = document.querySelector('${selector}');
+    if (!btn) return 'button_gone';
+    const label = btn.querySelector('[class*="accountCheckinButtonLabel"]');
+    return { text: ((label ? label.textContent : btn.textContent) || '').trim(), disabled: !!btn.disabled };
+  })()`);
+  const after = verify.result.result.value;
+  const afterText = typeof after === 'string' ? after : after.text;
+  const afterDisabled = typeof after === 'object' && after !== null ? after.disabled : false;
+  if (/已签/.test(afterText) || afterDisabled) {
+    return { status: 'success', detail: afterText };
+  }
+  return { status: 'unknown', detail: afterText };
+}
+
 async function performCheckIn(cdp) {
   const { evaluate } = cdp;
 
-  // 5.1 打开账户菜单（状态感知：已打开就不重复点；UI 刚启动时点击可能无效，重试 3 轮）
-  const menuAlreadyOpen = await evaluate(`!!document.querySelector('[class*="accountPopover"]')`);
-  if (!menuAlreadyOpen.result.result.value) {
-    console.log('[INFO] 点击左下角头像...');
-    for (let round = 0; round < 3; round++) {
-      await evaluate(`
-        (() => {
-          const el = document.querySelector('[class*="accountTrigger"]');
-          if (el) { el.click(); return true; }
-          return false;
-        })()
-      `);
-      let opened = false;
-      for (let i = 0; i < 10; i++) {
-        await sleep(500);
-        const open = await evaluate(`!!document.querySelector('[class*="accountPopover"]')`);
-        if (open.result.result.value) { opened = true; break; }
+  // ---- 入口 A：Agent 模式头像菜单 ----
+  const hasTrigger = await evaluate(`!!document.querySelector('[class*="accountTrigger"]')`);
+  if (hasTrigger.result.result.value) {
+    const menuAlreadyOpen = await evaluate(`!!document.querySelector('[class*="accountPopover"]')`);
+    if (!menuAlreadyOpen.result.result.value) {
+      console.log('[INFO] 检测到头像入口，点击打开账户菜单...');
+      // UI 刚启动时点击可能无效，失败重试 3 轮
+      let menuOpened = false;
+      for (let round = 0; round < 3; round++) {
+        await evaluate(`
+          (() => {
+            const el = document.querySelector('[class*="accountTrigger"]');
+            if (el) { el.click(); return true; }
+            return false;
+          })()
+        `);
+        for (let i = 0; i < 10; i++) {
+          await sleep(500);
+          const open = await evaluate(`!!document.querySelector('[class*="accountPopover"]')`);
+          if (open.result.result.value) { menuOpened = true; break; }
+        }
+        if (menuOpened) break;
+        console.log('[WARN] 账户菜单未弹出，重试...');
       }
-      if (opened) break;
-      console.log('[WARN] 账户菜单未弹出，重试...');
+    } else {
+      console.log('[INFO] 账户菜单已经打开');
     }
-  } else {
-    console.log('[INFO] 账户菜单已经打开');
-  }
 
-  // 5.2 读取签到按钮状态
-  const inspect = await evaluate(`
-    (() => {
-      const btn = document.querySelector('[class*="accountCheckinButton"]');
-      const label = document.querySelector('[class*="accountCheckinButtonLabel"]');
-      if (!btn) return { error: 'checkin_button_not_found' };
-      return {
-        buttonText: label ? (label.textContent || '').trim() : (btn.textContent || '').trim(),
-        disabled: !!btn.disabled,
-        title: (document.querySelector('[class*="accountCheckinTitle"]')?.textContent || '').trim()
-      };
-    })()
-  `);
-  const state = inspect.result.result.value;
-  if (!state) {
-    throw new Error('读取签到按钮状态失败（页面脚本执行异常）');
-  }
-  console.log(`[INFO] 签到按钮状态: ${JSON.stringify(state)}`);
+    const inspect = await evaluate(`
+      (() => {
+        const btn = document.querySelector('[class*="accountCheckinButton"]');
+        const label = document.querySelector('[class*="accountCheckinButtonLabel"]');
+        if (!btn) return { error: 'checkin_button_not_found' };
+        return {
+          buttonText: label ? (label.textContent || '').trim() : (btn.textContent || '').trim(),
+          disabled: !!btn.disabled
+        };
+      })()
+    `);
+    const state = inspect.result.result.value;
+    if (state && !state.error) {
+      console.log(`[INFO] 签到按钮状态: ${JSON.stringify(state)}`);
+      if (state.disabled || /已签/.test(state.buttonText)) {
+        return { status: 'already_signed', detail: state.buttonText };
+      }
+      return clickAndVerify(cdp, '[class*="accountCheckinButton"]');
+    }
 
-  if (state.error) {
-    // 区分"未登录"与"类名已变化"。
+    // 菜单开了但按钮缺失：区分"未登录"与"类名已变化"。
     // 注意：已登录菜单固定含"退出登录"，先剔除再匹配登录引导词，避免误判。
     const loginHint = await evaluate(`
       (() => {
@@ -490,47 +525,54 @@ async function performCheckIn(cdp) {
     if (hint && hint.menuOpen && hint.hasLoginHint) {
       return { status: 'not_logged_in', detail: hint.sample };
     }
-    throw new Error('未找到每日签到按钮，可能类名已变化');
+    console.log('[WARN] 头像菜单内未找到签到按钮，尝试其它入口...');
   }
 
-  // 已签判定：按钮 disabled 或文本含"已签"（当前版本为"已签到"）
-  if (state.disabled || /已签/.test(state.buttonText)) {
-    return { status: 'already_signed', detail: state.buttonText };
-  }
-
-  // 5.3 点击签到按钮
-  console.log('[INFO] 尝试点击签到按钮...');
-  const clicked = await evaluate(`
+  // ---- 入口 B：IDEA 模式签到横幅 ----
+  const banner = await evaluate(`
     (() => {
-      const btn = document.querySelector('[class*="accountCheckinButton"]');
-      if (!btn || btn.disabled) return false;
+      const btn = document.querySelector('[class*="commercialBannerPopupPrimaryAction"]');
+      if (!btn) return null;
+      return { text: (btn.textContent || '').trim(), disabled: !!btn.disabled };
+    })()
+  `);
+  const b = banner.result.result.value;
+  if (b) {
+    console.log(`[INFO] 签到横幅状态: ${JSON.stringify(b)}`);
+    if (b.disabled || /已签/.test(b.text)) {
+      return { status: 'already_signed', detail: b.text };
+    }
+    return clickAndVerify(cdp, '[class*="commercialBannerPopupPrimaryAction"]');
+  }
+
+  return { status: 'no_entry' };
+}
+
+// IDEA 模式（workbench）的签到横幅是临时弹窗，被关闭后该模式无稳定入口。
+// 此时点击右上角官方的"Agent ↗"按钮打开 Agent 模式窗口（solo-lite），再走头像菜单流程。
+async function openAgentWindowFromWorkbench() {
+  const targets = await listPageTargets();
+  const workbench = targets.find(t => /workbench\.html/i.test(t.url));
+  if (!workbench) return false;
+  let cdp;
+  try {
+    cdp = await connectPage(workbench);
+  } catch {
+    return false;
+  }
+  try {
+    const r = await cdp.evaluate(`(() => {
+      const btn = document.querySelector('[class*="icube-open-solo-lite-window-button"]');
+      if (!btn) return false;
       btn.click();
       return true;
-    })()
-  `);
-
-  if (!clicked.result.result.value) {
-    return { status: 'click_failed' };
+    })()`);
+    return !!r.result.result.value;
+  } catch {
+    return false;
+  } finally {
+    cdp.ws.close();
   }
-
-  await sleep(2000);
-
-  // 5.4 验证：按钮文字变成"已签"或按钮变 disabled
-  const verify = await evaluate(`
-    (() => {
-      const btn = document.querySelector('[class*="accountCheckinButton"]');
-      if (!btn) return 'button_gone';
-      const label = btn.querySelector('[class*="accountCheckinButtonLabel"]');
-      return { text: ((label ? label.textContent : btn.textContent) || '').trim(), disabled: !!btn.disabled };
-    })()
-  `);
-  const after = verify.result.result.value;
-  const afterText = typeof after === 'string' ? after : after.text;
-  const afterDisabled = typeof after === 'object' && after !== null ? after.disabled : false;
-  if (/已签/.test(afterText) || afterDisabled) {
-    return { status: 'success', detail: afterText };
-  }
-  return { status: 'unknown', detail: afterText };
 }
 
 // -------------------------------------------------------------
@@ -539,11 +581,49 @@ async function performCheckIn(cdp) {
 async function main() {
   try {
     await ensureDebugPort();
-    console.log('[INFO] 连接 CDP...');
-    const cdp = await connectCDP();
-    const result = await performCheckIn(cdp);
-    cdp.ws.close();
+
+    let result = null;
+    let lastError = null;
+    for (let attempt = 0; attempt < 2 && !result; attempt++) {
+      const targets = await listPageTargets();
+      if (!targets.length) {
+        throw new Error('未找到 page 类型的 CDP target');
+      }
+      for (const t of targets) {
+        console.log(`[INFO] 探测页面: ${t.title || t.url}`);
+        let cdp;
+        try {
+          cdp = await connectPage(t);
+        } catch (err) {
+          lastError = err;
+          continue;
+        }
+        try {
+          result = await performCheckIn(cdp);
+        } catch (err) {
+          lastError = err;
+          cdp.ws.close();
+          continue;
+        }
+        cdp.ws.close();
+        if (result.status === 'no_entry') {
+          // 本页无签到入口：清空结果继续探测下一页
+          result = null;
+          lastError = new Error('该页面无签到入口');
+        } else {
+          break;
+        }
+      }
+      if (!result && attempt === 0 && await openAgentWindowFromWorkbench()) {
+        console.log('[INFO] IDEA 模式下未找到签到入口，已通过"Agent ↗"打开 Agent 窗口，重新探测...');
+        await sleep(5000);
+      }
+    }
     await sleep(300);
+
+    if (!result || result.status === 'no_entry') {
+      throw lastError || new Error('所有页面均未找到签到入口');
+    }
 
     console.log('[RESULT]', JSON.stringify(result, null, 2));
 

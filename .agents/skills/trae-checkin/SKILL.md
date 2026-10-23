@@ -50,28 +50,36 @@ agent-browser eval "(() => { const b = document.querySelector('[class*=\"account
 agent-browser eval "(() => { const b = document.querySelector('[class*=\"accountCheckinButton\"]'); return b ? { text: b.textContent.trim(), disabled: b.disabled } : 'button_gone'; })()"
 ```
 
-## DOM 结构速查（2026-10-23 实测）
+## DOM 结构速查（2026-10-23 实测，TraeCN 1.107.1）
 
-| 元素 | 选择器（前缀匹配） | 说明 |
-|------|--------------------|------|
-| 左下角头像 | `[class*="accountTrigger"]` | 点击弹出账户菜单 |
-| 账户弹窗 | `[class*="accountPopover"]` | 关闭时从 DOM 卸载，可当开合标志 |
-| 签到行容器 | `[class*="accountCheckinSlot"]` | 标题 + 提示 + 按钮 |
-| 签到按钮 | `[class*="accountCheckinButton"]` | 未签可点；已签文本"已签到"且 `disabled=true` |
-| 按钮文本 | `[class*="accountCheckinButtonLabel"]` | 未签"签到"，已签"已签到" |
+Trae CN 启动后有两种模式，**签到入口不同**，脚本按"solo-lite 优先、workbench 其次"逐页探测：
 
-状态判定：按钮 `disabled=true` 或文本含"已签"即今日已签；点击后 2 秒复读文本或 `disabled` 验证成功。
+| 模式 | 主窗口 target | 签到入口 | 选择器（前缀匹配） |
+|------|--------------|----------|--------------------|
+| Agent 模式（Build With TRAE） | `solo/solo-lite.html` | 左下角头像 → 账户菜单 | `[class*="accountTrigger"]` → `[class*="accountPopover"]` → `[class*="accountCheckinButton"]` |
+| IDEA 模式（SOLO 编辑器） | `workbench/workbench.html` | 右上角自动弹的签到横幅 | `[class*="commercialBannerPopupPrimaryAction"]`（无 label 子元素，直接读按钮文本） |
+
+| 元素 | 选择器 | 说明 |
+|------|--------|------|
+| 账户弹窗 | `[class*="accountPopover"]` | 仅 Agent 模式；关闭时从 DOM 卸载，可当开合标志 |
+| 签到按钮（菜单） | `[class*="accountCheckinButton"]` | 未签可点；已签文本"已签到"且 `disabled=true` |
+| 签到横幅（IDEA） | `[class*="commercialBannerPopupPrimaryAction"]` | 判定同上；横幅是临时弹窗，被关闭后 DOM 里就没了 |
+
+状态判定（两种入口一致）：按钮 `disabled=true` 或文本含"已签"即今日已签；点击后 2 秒复读文本或 `disabled` 验证成功。
+
+IDEA 模式横幅消失后的兜底：点击 IDEA 窗口右上角的 `icube-open-solo-lite-window-button`（"Agent ↗"）打开 Agent 模式窗口，再走头像菜单流程。实测该按钮即使处于 `display:none`（`data-titlebar-presentation="hidden"`），DOM 合成点击依然生效。
 
 ## 关键坑（实测结论，绕不开）
 
-1. **主工作台 target 选择**。Electron 会暴露多个 `page` target：`floatingButton.html`（悬浮球）与主窗口 `solo-lite.html`。取 `agent-browser tab` 列表里 URL 含 `solo-lite.html`（或 `workbench.html`）的那个。无脑取第一个 target 时所有选择器都查不到，报"签到按钮不存在"。
-2. **原生鼠标点击会被遮挡拦截**。对头像执行 `agent-browser click @eN` 会报 `Element is covered by <div>`——Trae 工作台有遮挡层，Input 事件的真实命中检测过不去。必须用 `agent-browser eval` 执行 DOM 合成点击 `el.click()`，它不经过命中检测。
+1. **两种模式、多个 target**。Agent 模式窗口是 `solo-lite.html`，IDEA 模式是 `workbench.html`，另有悬浮球 `floatingButton.html`。不能取第一个 target：逐页探测有签到入口的页面。
+2. **原生鼠标点击会被遮挡拦截**。对头像执行 `agent-browser click @eN` 会报 `Element is covered by <div>`——工作台有遮挡层，Input 事件的真实命中检测过不去。必须用 `agent-browser eval` 执行 DOM 合成点击 `el.click()`，它不经过命中检测（对 `display:none` 的元素同样有效，如 IDEA→Agent 的切换按钮）。
 3. **进程名是 `Trae CN.exe`**。按 `TRAE SOLO CN` 匹配进程会全部落空（检测"是否在运行"恒为否、`--close` 杀不掉进程）。匹配规则用 `^(Trae|TRAE).*\.exe$` 并排除 `setup|unins|update`（否则会把 `Downloads\TRAE_CN-Setup-x64.exe` 安装包当主程序启动）。
 4. **注册表定位的安装目录**。Trae CN 用户级安装落在 `%LOCALAPPDATA%\Programs\Trae CN\`，注册表 `HKCU\...\Uninstall` 的 `DisplayName` 为 `TRAE CN (User)`。候选文件名要包含 `Trae CN.exe`。
 5. **PowerShell 5.1 编码**。含中文的 `.ps1` 必须带 UTF-8 BOM，否则 PS 5.1 按 GBK 读取直接解析报错；优先用 `pwsh` 7。
 6. **冷启动时序**。Trae 刚启动时 UI 事件可能还没挂载，点击头像无效，弹窗不出。需要轮询检测 `accountPopover`，超时重试点击 2-3 轮。
 7. **未登录误判**。已登录账户菜单固定含"退出登录"，用 `/登录/` 检测未登录状态必然误报。先剔除"退出登录"再匹配"立即登录|扫码|手机号|验证码"。
 8. **模板字符串正则转义**。Node 模板字符串里的 `\/` 会变成 `/`，注入页面的正则字面量被截断报 `Invalid regular expression flags`。要么写 `\\/`，要么避免在正则里用 `/`。
+9. **IDEA 模式横幅是一次性弹窗**。打开 IDEA 模式时自动弹一次，手动关闭或超时后 DOM 里就没有签到入口了。IDEA 模式探测不到入口时，走"Agent ↗"开 Agent 窗口兜底。
 
 ## 一键执行（配套脚本）
 
