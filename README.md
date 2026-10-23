@@ -4,17 +4,19 @@
 
 ## 一、需求与想法
 
+> 本节与第二节为 2026-08 项目起步时的记录，UI 文案与安装路径以第四节与 6.3 的当前状态为准。
+
 Trae SOLO CN（字节跳动面向中文用户的 AI IDE）每天点击左下角头像会弹出一个账户菜单，其中有一项：
 
 > **每日签到领 200 积分**
 
-右侧有一个按钮，未签到时显示为可点击的"签到"类文字；已签到时显示为灰色的"今日已签"。
+右侧有一个按钮，未签到时显示为可点击的"签到"类文字；已签到时显示为灰色的"今日已签"。（当前版本 UI 文案为"签到抽百万积分"，已签显示"已签到"，且新增了 IDEA/SOLO 模式入口，见第四节。）
 
 目标：让电脑每天自动完成这个点击，无需手动打开 Trae、点头像、点签到按钮。
 
 ## 二、关键判断：它是不是"套壳 Web"？
 
-打开安装目录 `C:\Program Files\TRAE SOLO CN` 检查：
+打开安装目录 `C:\Program Files\TRAE SOLO CN` 检查（2026-08 时的安装位置；当前安装名为 `Trae CN`，位于 `%LOCALAPPDATA%\Programs\Trae CN`）：
 
 | 发现 | 含义 |
 |------|------|
@@ -24,7 +26,7 @@ Trae SOLO CN（字节跳动面向中文用户的 AI IDE）每天点击左下角�
 | `main.js` 里出现 `out-build/vs/platform/...`、`webContentExtractorService` | 基于 **VS Code 内核 fork**（和 Cursor 同源） |
 | 没有 `WebView2Loader.dll` | 排除 Tauri / Wails / CEF-WebView2 |
 
-**结论**：`TRAE SOLO CN.exe` 是 **Electron（Chromium 142）+ VS Code 架构** 的套壳 Web 应用。左下角头像、签到菜单、设置页全是 DOM，因此可以用 Web 自动化技术操控。
+**结论**：`TRAE SOLO CN.exe` 是 **Electron（Chromium 142）+ VS Code 架构** 的套壳 Web 应用。左下角头像、签到菜单、设置页全是 DOM，因此可以用 Web 自动化技术操控。（现安装名为 `Trae CN.exe`，结论不变，见 6.3。）
 
 ## 三、技术路线：Chrome DevTools Protocol (CDP)
 
@@ -128,14 +130,14 @@ Trae CN 有两种模式，签到入口不同，脚本按"solo-lite 优先、work
 :: 最简单：自动定位 Trae，默认端口 9222
 node src/auto-checkin.mjs
 
-:: 指定 Trae 路径 + 自定义端口
-node src/auto-checkin.mjs --dir "C:\Program Files\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223
+:: 指定 Trae 路径 + 自定义端口（示例为本机 Trae CN 安装路径；不传则自动定位）
+node src/auto-checkin.mjs --dir "C:\Users\%USERNAME%\AppData\Local\Programs\Trae CN\Trae CN.exe" --port 9223
 
 :: Trae 已在运行但无调试端口时，强制重启
 node src/auto-checkin.mjs --force
 
 :: 独立 profile 隔离测试（不干扰主账号）
-node src/auto-checkin.mjs --dir "C:\Program Files\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223 --force --profile "%TEMP%\trae-test-profile"
+node src/auto-checkin.mjs --dir "C:\Users\%USERNAME%\AppData\Local\Programs\Trae CN\Trae CN.exe" --port 9223 --force --profile "%TEMP%\trae-test-profile"
 
 :: 签到完成后自动关闭 Trae（适合无人值守/任务计划场景）
 node src/auto-checkin.mjs --force --close
@@ -174,7 +176,7 @@ node src/auto-checkin.mjs
 `launch-with-debug.bat` 与 `relaunch-with-debug.ps1` 都调用共用的 `scripts\locate-trae.ps1` 定位；`src\auto-checkin.mjs` 内实现了等效的 Node 版定位。三处均按"进程 → 注册表 → 常见目录"的顺序解析 Trae 可执行文件路径：
 
 1. **自定义路径**：优先使用命令行参数 `--dir/--exe`（或 `TRAECHECKIN_EXE` 环境变量、`relaunch-with-debug.ps1` 的 `-ExePath` 参数）。
-2. **正在运行的进程**：查询系统中正在运行的 `TRAE*.exe` 主进程，取其真实可执行路径。
+2. **正在运行的进程**：查询系统中正在运行的 `Trae*.exe` / `TRAE*.exe` 主进程，取其真实可执行路径。
 3. **注册表卸载项**：扫描 `HKLM/HKCU` 卸载列表里 `DisplayName` 含 `Trae` 的安装位置。
 4. **常见安装目录**：有限深度（3 层）扫描以下位置：`C:\Program Files`、`C:\Program Files (x86)`、`%LOCALAPPDATA%\Programs`、`%USERPROFILE%`。
 
@@ -208,7 +210,7 @@ node "项目目录\src\auto-checkin.mjs" --force --close
 
 1. 打开"任务计划程序" → 创建基本任务，每天固定时间触发。
 2. 操作选择"启动程序"，程序设为：
-   `node "D:\Projects\trae-daily-checkin\src\auto-checkin.mjs" --force --close`
+   `node "项目目录\src\auto-checkin.mjs" --force --close`
 3. 建议签到时间设为开机后或午休时间，并勾选"无论用户是否登录都要运行"（需要保存密码）。
 
 > 如果希望签到后 Trae 保持打开（正常使用时），命令去掉 `--close` 即可。
@@ -233,12 +235,14 @@ node "项目目录\src\auto-checkin.mjs" --force --close
 
 ## 八、验证结果
 
+> 本节为 2026-08-19 初始版本的实测记录（UI 文案与当时一致）；2026-10 双模式与卡片入口的实测结论见第四节与 [CHANGELOG.md](CHANGELOG.md)。
+
 ### 8.1 端到端签到测试（9223 端口，独立新登录账号）
 
 在某次"未登录 → 手动登录"的新账号实例上，跑了一次完整的真实签到：
 
 ```bat
-cd /d "D:\Projects\trae-daily-checkin" && node src\auto-checkin.mjs --port 9223
+cd /d "项目目录" && node src\auto-checkin.mjs --port 9223
 ```
 
 日志输出：

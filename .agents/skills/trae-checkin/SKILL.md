@@ -1,6 +1,6 @@
 ---
 name: trae-checkin
-description: 使用 agent-browser 完成 Trae（Trae CN / TRAE SOLO CN，Electron + VS Code 内核）的每日签到自动化。适用场景包括"自动签到 Trae"、"连接 Trae 的调试端口"、"操作 Trae 界面"、"Trae 每日领积分"、"Electron 应用 CDP 自动化"。核心流程：带调试端口启动 Trae，agent-browser 通过 CDP 连接，定位主工作台页面，用 DOM 合成点击打开账户菜单并点击签到按钮。
+description: 使用 agent-browser 完成 Trae（Trae CN / TRAE SOLO CN，Electron + VS Code 内核）的每日签到自动化，覆盖 Agent 模式（solo-lite 头像菜单）与 IDEA/SOLO 模式（workbench 签到横幅 / icube-user-card 用户卡片）。适用场景包括"自动签到 Trae"、"连接 Trae 的调试端口"、"操作 Trae 界面"、"Trae 每日领积分"、"Electron 应用 CDP 自动化"。核心流程：带调试端口启动 Trae，agent-browser 通过 CDP 连接，逐页定位有签到入口的页面，用 DOM 合成点击完成签到。
 ---
 
 # Trae 每日签到（agent-browser 实操手册）
