@@ -141,6 +141,8 @@ node src/auto-checkin.mjs --help
 | `--profile <path>` | 使用独立 user-data-dir（profile）启动，用于隔离测试 | 默认账号 |
 | `--close` | 签到完成后关闭 Trae 进程（适合无人值守） | 关 |
 
+> `--profile` 模式下独立 user-data-dir 是独立 Electron 实例，与正在运行的主实例并存，脚本不会杀掉主实例（建议配合 `--port 9223` 等非默认端口）。`--close` 在签到成功、已签、失败、异常所有路径下都会生效。
+
 > 兼容旧用法：以上参数均有对应环境变量 `TRAECHECKIN_EXE` / `TRAECHECKIN_PORT` / `TRAECHECKIN_FORCE_RELAUNCH` / `TRAECHECKIN_USER_DATA_DIR` / `TRAECHECKIN_CLOSE`，但**命令行参数优先级更高**。实际优先级：`命令行参数 > 环境变量 > 自动扫描定位`。
 
 ### 6.2 首次/手动运行
@@ -156,7 +158,7 @@ node src/auto-checkin.mjs
 
 ### 6.3 如何定位 Trae（自定义路径 + 自动扫描）
 
-`launch-with-debug.bat` 与 `relaunch-with-debug.ps1` 都调用共用的 `scripts\locate-trae.ps1` 定位；`src\auto-checkin.mjs` 内实现了等效的 Node 版定位。三处按同一优先级解析 Trae 可执行文件路径：
+`launch-with-debug.bat` 与 `relaunch-with-debug.ps1` 都调用共用的 `scripts\locate-trae.ps1` 定位；`src\auto-checkin.mjs` 内实现了等效的 Node 版定位。三处均按"进程 → 注册表 → 常见目录"的顺序解析 Trae 可执行文件路径：
 
 1. **自定义路径**：优先使用命令行参数 `--dir/--exe`（或 `TRAECHECKIN_EXE` 环境变量、`relaunch-with-debug.ps1` 的 `-ExePath` 参数）。
 2. **正在运行的进程**：查询系统中正在运行的 `TRAE*.exe` 主进程，取其真实可执行路径。
@@ -279,20 +281,36 @@ node src/auto-checkin.mjs --port 9223 --force --profile "D:\temp\trae-test-profi
 
 ## 十、2026-10-23 实测修复记录
 
-在本机（TraeCN 1.107.1，安装名 `Trae CN.exe`）实测发现并修复了五个导致脚本完全失效的 bug：
+在本机（TraeCN 1.107.1，安装名 `Trae CN.exe`）实测发现并修复了导致脚本完全失效的 bug。
+
+### 第一轮：主脚本重写
 
 | Bug | 现象 | 修复 |
 |-----|------|------|
 | CDP target 误选 | Electron 暴露多个 page（悬浮球 `floatingButton.html` + 主窗口），旧版取第一个 page，永远连到悬浮球，报"签到按钮不存在" | 优先选 URL 含 `solo-lite.html`/`workbench.html` 的 page |
 | 进程名硬编码 | `isTraeRunning`/`closeTrae` 只匹配 `*TRAE SOLO CN*`，本机进程名是 `Trae CN.exe`，检测恒为否、`--close` 杀不掉 | 匹配 `^(Trae\|TRAE).*\.exe$`，排除 `setup\|unins\|update` |
 | 安装包误判 | 自动扫描把 `Downloads\TRAE_CN-Setup-x64.exe` 当主程序启动，端口永远不开 | 文件名黑名单排除安装包/卸载器；扫描目录补 `%LOCALAPPDATA%\Programs` |
-| PS1 编码崩溃 | `locate-trae.ps1` 无 BOM，PowerShell 5.1 按 GBK 读中文直接解析报错，所有 bat 调用链失效 | Node 侧优先用 `pwsh` 7；脚本内不再依赖该 ps1 |
+| PS1 编码崩溃 | `locate-trae.ps1` 无 BOM，PowerShell 5.1 按 GBK 读中文直接解析报错，所有 bat 调用链失效 | ps1 补 UTF-8 BOM；Node 侧优先用 `pwsh` 7 |
 | 正则转义崩溃 | 模板字符串把 `\/` 变 `/`，注入页面的正则被截断报 `Invalid regular expression flags`；未登录检测用 `/登录/` 会被菜单里固定的"退出登录"误触发 | 异常分支加 undefined 防护；剔除"退出登录"后再匹配；打开菜单失败自动重试 3 轮 |
+
+### 第二轮：工具链与健壮性
+
+| Bug | 现象 | 修复 |
+|-----|------|------|
+| bat 中文解析崩溃 | `chcp 65001` + UTF-8 无 BOM 的中文 bat 在 cmd 下行偏移错位（`rem` 注释行被拆成命令执行、行被截断），且行为随行字节数漂移 | bat 改为全 ASCII（说明文字保留在 README 与 Node 脚本输出）；ps1 保持中文但必须带 BOM |
+| bat 延迟展开误判 | `launch-with-debug.bat` 在同一括号块内 set 后立即用 `%VAR%` 判断，解析期展开导致定位成功也报错 | 改用 `goto :run` 跳出块 |
+| echo 裸括号 | `uninstall-schedule.bat` 在 if 块内输出含 `(it may not exist)`，`)` 被当作块结束符 | 移除裸括号 |
+| 定位候选不含本机安装名 | ps1 候选名单与过滤器都不含 `Trae CN.exe`，pwsh 下也找不到 | 候选名补 `Trae CN.exe`，过滤器放宽为 `^Trae.*\.exe$` 并排除安装包 |
+| 杀进程按安装目录 | `relaunch-with-debug.ps1` 按 `*TRAE SOLO CN*` 过滤杀不到本机进程 | 改为杀 Trae 安装目录下全部进程（主程序 + 子进程 + 辅助工具） |
+| 端口归属不校验 | 任何应用监听 9222 都会被当成 Trae 连接（假服务测试中 `/json` 非数组直接崩） | 校验 `/json/version` 的 UA 含 `TraeCN`，`/json` 非数组时明确报错提示换端口 |
+| `--port` 不校验 | `--port abc` 得到 NaN，带着非法参数启动 Trae 白等 30 秒 | 解析后立即校验 1-65535 |
+| `--profile` 误杀主实例 | 独立 profile 与主实例并存是设计目标，但旧逻辑把"有 Trae 在运行"当冲突，`--force` 会连主账号实例一起杀 | profile 模式跳过运行检测，直接启动新实例 |
+| `readdirSync` 无保护 | 扫描 Trae 目录内容时权限拒绝会抛未捕获异常 | 补 try/catch |
 
 另有两个 agent-browser 实操结论，已写入技能文档 `.agents/skills/trae-checkin/SKILL.md`：
 
 1. 原生鼠标事件（`agent-browser click`）会被工作台遮挡层拦截（`Element is covered by <div>`），必须用 `eval` 执行 DOM 合成点击 `el.click()`。
-2. Trae 冷启动时 UI 事件未挂载，点击头像无效，需要轮询加重试。
+2. Trae 冷启动时 UI 事件未挂载，点击头像无效，需要轮询加重试。技能文档的 `tab --url <pattern>` 在当前 CLI 版本不可用，按 tab 编号切换（`tab t1`）。
 
 ## 十一、项目文件说明
 

@@ -36,6 +36,11 @@ function parseOptions() {
 
 const OPTS = parseOptions();
 
+if (!Number.isInteger(OPTS.port) || OPTS.port < 1 || OPTS.port > 65535) {
+  console.error(`[ERROR] --port 必须是 1-65535 的整数，当前值: ${OPTS.port}`);
+  process.exit(1);
+}
+
 if (OPTS.help) {
   console.log(`用法：
   node src/auto-checkin.mjs [选项]
@@ -195,10 +200,12 @@ function scanCommonDirs(maxDepth = 3) {
             const exe = path.join(full, n);
             if (fs.existsSync(exe)) { hit.push(exe); return; }
           }
-          for (const e2 of fs.readdirSync(full)) {
-            const exe = path.join(full, e2);
-            if (looksLikeTraeExe(exe) && fs.existsSync(exe)) { hit.push(exe); return; }
-          }
+          try {
+            for (const e2 of fs.readdirSync(full)) {
+              const exe = path.join(full, e2);
+              if (looksLikeTraeExe(exe) && fs.existsSync(exe)) { hit.push(exe); return; }
+            }
+          } catch { /* 目录不可读则跳过 */ }
         }
         walk(full, depth + 1);
       } else if (looksLikeTraeExe(full)) {
@@ -261,13 +268,21 @@ function traeProcFilterPs() {
   `;
 }
 
-async function isPortOpen() {
+// 探测端口状态并识别是否为 Trae 的 CDP（其它应用监听同端口时不能误连）
+async function probePort() {
   try {
     const res = await fetch(`${DEBUG_URL}/json/version`, { signal: AbortSignal.timeout(3000) });
-    return res.ok;
+    if (!res.ok) return { open: false, isTrae: false };
+    const info = await res.json();
+    const ua = `${info.Browser || ''} ${info['User-Agent'] || ''}`;
+    return { open: true, isTrae: /trae/i.test(ua) };
   } catch {
-    return false;
+    return { open: false, isTrae: false };
   }
+}
+
+async function isPortOpen() {
+  return (await probePort()).open;
 }
 
 async function isTraeRunning() {
@@ -301,15 +316,29 @@ async function closeTrae() {
 async function waitForPort(timeoutMs) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (await isPortOpen()) return;
+    const { open, isTrae } = await probePort();
+    if (open && isTrae) return;
     await sleep(500);
   }
-  throw new Error('等待调试端口超时');
+  throw new Error('等待 Trae 调试端口超时（若端口被其它应用占用，请用 --port 换端口重试）');
 }
 
 async function ensureDebugPort() {
-  if (await isPortOpen()) {
+  const { open, isTrae } = await probePort();
+
+  if (open && isTrae) {
     console.log('[OK] 调试端口已开放');
+    return;
+  }
+  if (open && !isTrae) {
+    throw new Error(`端口 ${DEBUG_PORT} 被其它应用占用（不是 Trae 的调试端口）。请用 --port 换一个端口重试。`);
+  }
+
+  // 独立 profile 是独立 Electron 实例，可与正在运行的主实例并存，无需检测/强杀
+  if (USER_DATA_DIR) {
+    console.log('[INFO] 独立 profile 模式：直接启动新实例...');
+    launchTraeWithDebug();
+    await waitForPort(30_000);
     return;
   }
 
@@ -347,7 +376,11 @@ async function ensureDebugPort() {
 // -------------------------------------------------------------
 async function connectCDP() {
   const res = await fetch(`${DEBUG_URL}/json`);
-  const targets = await res.json();
+  const data = await res.json();
+  if (!Array.isArray(data)) {
+    throw new Error(`CDP /json 返回异常数据，端口 ${DEBUG_PORT} 可能被其它应用占用（请用 --port 换端口）`);
+  }
+  const targets = data;
   const pages = targets.filter(t => t.type === 'page');
   if (!pages.length) {
     throw new Error('未找到 page 类型的 CDP target');

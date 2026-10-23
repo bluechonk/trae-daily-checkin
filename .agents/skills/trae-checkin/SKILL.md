@@ -32,6 +32,7 @@ agent-browser tab
 #   [t1] Agent - vscode-file://vscode-app/.../solo/solo-lite.html
 #   [t2] floatingButton.html - file:///.../iCubeFloatingChat/...
 
+# 用 tab 编号切换（实测当前 CLI 版本不支持 tab --url <pattern>，按编号最稳）
 agent-browser tab t1
 
 # 3. 打开账户菜单：只能用 DOM 合成点击（见"关键坑 2"）
