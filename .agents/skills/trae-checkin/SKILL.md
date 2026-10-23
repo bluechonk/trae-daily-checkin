@@ -69,6 +69,8 @@ Trae CN 启动后有两种模式，**签到入口不同**，脚本按"solo-lite 
 
 IDEA 模式横幅消失后的兜底：点击 IDEA 窗口右上角的 `icube-open-solo-lite-window-button`（"Agent ↗"）打开 Agent 模式窗口，再走头像菜单流程。实测该按钮即使处于 `display:none`（`data-titlebar-presentation="hidden"`），DOM 合成点击依然生效。
 
+SOLO 模式还有一个人工入口：顶部"设置"齿轮右侧的头像（自定义元素 `icube-user-profile`，shadowRoot 内为 `.user-avatar-circle` / `img.user-avatar-image`），点击弹出与 Agent 模式同款的签到菜单。**实测该入口无法通过 CDP 自动化**：DOM 合成点击与真实 `Input.dispatchMouseEvent`（多坐标、完整事件序列）均无法触发菜单，DOM 观察确认点击无任何菜单节点产生，疑似 titlebar 拖拽区（`-webkit-app-region: drag`）在合成器层拦截，该层拦截连真实输入都过不去。因此 SOLO 模式的自动化路径为：横幅 → "Agent ↗" 兜底，签到功能不受影响。
+
 ## 关键坑（实测结论，绕不开）
 
 1. **两种模式、多个 target**。Agent 模式窗口是 `solo-lite.html`，IDEA 模式是 `workbench.html`，另有悬浮球 `floatingButton.html`。不能取第一个 target：逐页探测有签到入口的页面。

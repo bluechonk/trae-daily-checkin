@@ -75,7 +75,7 @@ Trae CN 有两种模式，签到入口不同，脚本按"solo-lite 优先、work
 | 模式 | 主窗口 target | 签到入口 |
 |------|--------------|----------|
 | Agent 模式（Build With TRAE） | `solo/solo-lite.html` | 左下角头像 → 账户菜单 |
-| IDEA 模式（SOLO 编辑器） | `workbench/workbench.html` | 右上角自动弹的签到横幅 |
+| IDEA/SOLO 模式 | `workbench/workbench.html` | 右上角签到横幅（一次性）；横幅关闭后经"Agent ↗"打开 Agent 窗口签到 |
 
 | 元素 | 选择器/特征 | 模式 |
 |------|-------------|------|
@@ -89,6 +89,8 @@ Trae CN 有两种模式，签到入口不同，脚本按"solo-lite 优先、work
 由于 CSS 类名是工具生成的哈希后缀（如 `accountCheckinButton-hoMtQt`），脚本里使用 `*[class*="accountCheckinButton"]` 这种前缀匹配，比完全固定类名更抗更新。
 
 状态判定以按钮 `disabled` 属性和文本双重校验：`disabled=true` 或文本含"已签"即今日已签。IDEA 模式横幅被关闭后，脚本会点击 IDEA 窗口右上角的"Agent ↗"按钮打开 Agent 窗口，再走头像菜单流程完成签到。
+
+> IDEA/SOLO 模式下"设置"齿轮右侧也有一枚用户头像（自定义元素 `icube-user-profile`，shadowRoot 内 `.user-avatar-circle`），人工点击会弹出同款签到菜单。实测该入口无法被 CDP 自动化——titlebar 拖拽区（`-webkit-app-region: drag`）在合成器层拦截，真实输入事件同样无效，因此脚本不依赖它，功能由横幅 + "Agent ↗"兜底完整覆盖。
 
 ## 五、核心脚本设计
 
