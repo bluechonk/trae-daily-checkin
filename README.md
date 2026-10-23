@@ -68,17 +68,19 @@ http://localhost:9222/json
 
 ## 四、定位关键元素
 
-连接 CDP 后，在页面里执行 JS 来查找元素。实际探查到的关键选择器：
+连接 CDP 后，在页面里执行 JS 来查找元素。实际探查到的关键选择器（2026-10-23 于 TraeCN 1.107.1 复核）：
 
 | 元素 | 选择器/特征 |
 |------|-------------|
-| 左下角头像入口 | 类名前缀 `accountTrigger`，文本包含 `用户` 的 `<button>` |
-| 账户弹窗容器 | 类名前缀 `accountPopover`、`accountCard` |
-| 每日签到标题 | 类名前缀 `accountCheckinTitle`（文本 `每日签到领 200 积分`） |
-| 签到按钮 | 类名前缀 `accountCheckinButton` |
-| 签到按钮文字 | 类名前缀 `accountCheckinButtonLabel` |
+| 左下角头像入口 | 类名前缀 `accountTrigger`，文本包含用户名的 `<button>` |
+| 账户弹窗容器 | 类名前缀 `accountPopover`、`accountCard`（关闭时从 DOM 卸载） |
+| 每日签到行 | 类名前缀 `accountCheckinSlot`（标题随活动变化，如"签到抽百万积分"） |
+| 签到按钮 | 类名前缀 `accountCheckinButton`；已签时 `disabled=true` |
+| 签到按钮文字 | 类名前缀 `accountCheckinButtonLabel`；未签"签到"，已签"已签到" |
 
 由于 CSS 类名是工具生成的哈希后缀（如 `accountCheckinButton-hoMtQt`），脚本里使用 `*[class*="accountCheckinButton"]` 这种前缀匹配，比完全固定类名更抗更新。
+
+状态判定以按钮 `disabled` 属性和文本双重校验：`disabled=true` 或文本含"已签"即今日已签。
 
 ## 五、核心脚本设计
 
@@ -275,7 +277,24 @@ node src/auto-checkin.mjs --port 9223 --force --profile "D:\temp\trae-test-profi
 3. **单实例限制**：Electron 单实例机制导致"带端口启动"在已有实例运行时不会生效，因此脚本在冲突时默认安全退出，并提供强制重启选项。
 4. **UI 弹窗/网络失败**：如果签到接口失败，按钮文本不会变成"今日已签"，脚本会返回 `unknown`，此时需要人工查看。
 
-## 十、项目文件说明
+## 十、2026-10-23 实测修复记录
+
+在本机（TraeCN 1.107.1，安装名 `Trae CN.exe`）实测发现并修复了五个导致脚本完全失效的 bug：
+
+| Bug | 现象 | 修复 |
+|-----|------|------|
+| CDP target 误选 | Electron 暴露多个 page（悬浮球 `floatingButton.html` + 主窗口），旧版取第一个 page，永远连到悬浮球，报"签到按钮不存在" | 优先选 URL 含 `solo-lite.html`/`workbench.html` 的 page |
+| 进程名硬编码 | `isTraeRunning`/`closeTrae` 只匹配 `*TRAE SOLO CN*`，本机进程名是 `Trae CN.exe`，检测恒为否、`--close` 杀不掉 | 匹配 `^(Trae\|TRAE).*\.exe$`，排除 `setup\|unins\|update` |
+| 安装包误判 | 自动扫描把 `Downloads\TRAE_CN-Setup-x64.exe` 当主程序启动，端口永远不开 | 文件名黑名单排除安装包/卸载器；扫描目录补 `%LOCALAPPDATA%\Programs` |
+| PS1 编码崩溃 | `locate-trae.ps1` 无 BOM，PowerShell 5.1 按 GBK 读中文直接解析报错，所有 bat 调用链失效 | Node 侧优先用 `pwsh` 7；脚本内不再依赖该 ps1 |
+| 正则转义崩溃 | 模板字符串把 `\/` 变 `/`，注入页面的正则被截断报 `Invalid regular expression flags`；未登录检测用 `/登录/` 会被菜单里固定的"退出登录"误触发 | 异常分支加 undefined 防护；剔除"退出登录"后再匹配；打开菜单失败自动重试 3 轮 |
+
+另有两个 agent-browser 实操结论，已写入技能文档 `.agents/skills/trae-checkin/SKILL.md`：
+
+1. 原生鼠标事件（`agent-browser click`）会被工作台遮挡层拦截（`Element is covered by <div>`），必须用 `eval` 执行 DOM 合成点击 `el.click()`。
+2. Trae 冷启动时 UI 事件未挂载，点击头像无效，需要轮询加重试。
+
+## 十一、项目文件说明
 
 ```text
 trae-daily-checkin/
@@ -287,11 +306,13 @@ trae-daily-checkin/
 ├── scripts/
 │   ├── locate-trae.ps1           # 通用定位 Trae 路径（进程/注册表/常见目录，可单独调用）
 │   └── relaunch-with-debug.ps1   # 强制重启 Trae 并开放端口（复用 locate-trae.ps1 定位）
-└── src/
-    └── auto-checkin.mjs          # 自动签到主脚本（Node 版路径定位：自定义/自动扫描）
+├── src/
+│   └── auto-checkin.mjs          # 自动签到主脚本（Node 版路径定位：自定义/自动扫描）
+└── .agents/skills/trae-checkin/
+    └── SKILL.md                  # agent-browser 实操 Trae 签到的技能手册
 ```
 
-## 十一、后续可扩展
+## 十二、后续可扩展
 
 - 增加截图/日志落盘，方便排查失败原因。
 - 在 Windows 任务计划里直接触发，实现完全无人值守。
