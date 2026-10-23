@@ -7,9 +7,9 @@ description: 使用 agent-browser 完成 Trae（Trae CN / TRAE SOLO CN，Electro
 
 目标：每天自动完成 Trae 左下角头像菜单里的"签到"点击，无需人工操作。
 
-实测环境：TraeCN 1.107.1（Chrome 142 / Electron 39.2.7），Windows 11。本手册同时提供 agent-browser 手动操作流程与配套零依赖脚本 `src/auto-checkin.mjs`（项目根目录）两种方式。
+实测环境：TraeCN 1.107.1（Chrome 142 / Electron 39.2.7），Windows 11，agent-browser CLI 0.39.2。本手册同时提供 agent-browser 手动操作流程与配套零依赖脚本 `src/auto-checkin.mjs`（项目根目录）两种方式。
 
-agent-browser CLI 的安装、通用命令与实测坑见同目录 [agent-browser 技能](../agent-browser/SKILL.md)；第三方组件的出处与许可证说明见 [docs/third-party.md](../../docs/third-party.md)。
+agent-browser 的 GitHub 官方技能快照随附于 [.agents/skills/agent-browser/](../agent-browser/SKILL.md)（官方发现桩 + `skill-data/` 下 core/electron 等全量场景技能，Apache-2.0，出处见其 SOURCE-NOTES.md）；通用命令以官方内容与 CLI 自带的 `agent-browser skills get core` 为准，本仓库实测补充的用法集中在下文"关键坑"一节。第三方组件的出处与许可证说明见 [docs/third-party.md](../../docs/third-party.md)。
 
 ## 前置条件
 

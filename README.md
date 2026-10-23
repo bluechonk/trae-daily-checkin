@@ -350,8 +350,13 @@ trae-daily-checkin/
 │   ├── README.md                 # 文档目录入口
 │   └── third-party.md            # 第三方引用清单与许可证合规说明
 └── .agents/skills/
-    ├── trae-checkin/SKILL.md     # agent-browser 实操 Trae 签到的技能手册
-    └── agent-browser/SKILL.md    # agent-browser CLI 项目实操手册（含实测坑）
+    ├── trae-checkin/             # Trae 双模式签到技能手册（实测坑 + 配套流程）
+    │   └── SKILL.md
+    └── agent-browser/            # agent-browser 官方技能快照（GitHub 版，Apache-2.0）
+        ├── SKILL.md              # 官方发现桩
+        ├── LICENSE               # 上游 Apache-2.0 全文
+        ├── SOURCE-NOTES.md       # 上游来源与克隆信息
+        └── skill-data/           # core/electron 等全量场景技能
 ```
 
 ## 十二、许可证与第三方组件

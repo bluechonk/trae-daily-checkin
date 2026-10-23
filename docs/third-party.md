@@ -6,7 +6,7 @@
 
 | 组件 | 版本（实测） | 用途 | 引用方式 | 许可证 | 出处 |
 |------|--------------|------|----------|--------|------|
-| agent-browser | 0.39.2 | 浏览器/Electron 自动化 CLI，用于探索 Trae 签到 DOM 并验证流程 | 仅作为外部 CLI 工具使用并在技能文档中引用其命令用法，未复制其任何源码 | Apache-2.0 | [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser) |
+| agent-browser | 0.39.2（CLI）/ commit `dac13bb`（技能快照） | 浏览器/Electron 自动化 CLI，用于探索 Trae 签到 DOM 并验证流程；官方技能文档随附于 `.agents/skills/agent-browser/` | CLI 作为外部工具使用；技能文档为**完整复制**的官方快照（未修改），随仓库分发 | Apache-2.0（Copyright 2025 Vercel Inc.） | [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser) |
 | Node.js | >= 18（实测 24.21.0） | 运行环境（内置 `fetch` / `WebSocket` / `child_process`，因此无需 npm 依赖） | 运行时环境 | MIT | [nodejs.org](https://nodejs.org) |
 | Trae CN / TRAE SOLO CN | TraeCN 1.107.1 | 被自动化的目标应用 | 不分发、不修改其代码，仅通过其自带的 Chromium 远程调试协议（CDP）操控本机已安装实例的界面 | 专有软件（字节跳动） | [trae.com.cn](https://www.trae.com.cn) |
 
@@ -15,8 +15,12 @@
 ### agent-browser（Apache-2.0）
 
 - Apache-2.0 允许自由使用、修改与再分发，前提是保留原版权与许可声明。
-- 本仓库**未复制、未修改、未再分发** agent-browser 的任何源码；仅在 `.agents/skills/agent-browser/SKILL.md` 中引用其公开命令行接口与安装命令，并附出处链接，满足 Apache-2.0 第 4 条对修改/引用的声明要求。
-- 如需随本仓库分发 agent-browser 二进制或源码，须同步附上其 LICENSE 与 NOTICE 文本。
+- **CLI**：作为外部工具安装使用（`npm i -g agent-browser`），本仓库不含其代码。
+- **技能文档快照**：`.agents/skills/agent-browser/` 完整复制自 vercel-labs/agent-browser（HEAD `dac13bb`，2026-10-18 浅克隆），**未做任何修改**，随本仓库分发。已按 Apache-2.0 第 4 条要求：
+  - 保留原 [LICENSE](../.agents/skills/agent-browser/LICENSE)（Apache-2.0 全文，Copyright 2025 Vercel Inc.）；
+  - 来源与克隆信息记录在该目录的 [SOURCE-NOTES.md](../.agents/skills/agent-browser/SOURCE-NOTES.md)（上游无独立 NOTICE 文件，来源声明由本仓库维护）；
+  - 本仓库对快照的增改仅限本仓库自己的技能文件（如 `trae-checkin/`），不在快照目录内。
+- 如后续更新快照，请同步刷新 SOURCE-NOTES.md 中的 commit 与日期。
 
 ### Node.js（MIT）
 
