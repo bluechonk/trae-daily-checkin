@@ -292,55 +292,16 @@ node src/auto-checkin.mjs --port 9223 --force --profile "D:\temp\trae-test-profi
 3. **单实例限制**：Electron 单实例机制导致"带端口启动"在已有实例运行时不会生效，因此脚本在冲突时默认安全退出，并提供强制重启选项。
 4. **UI 弹窗/网络失败**：如果签到接口失败，按钮文本不会变成"今日已签"，脚本会返回 `unknown`，此时需要人工查看。
 
-## 十、2026-10-23 实测修复记录
+历次变更与修复明细见 [CHANGELOG.md](CHANGELOG.md)。
 
-在本机（TraeCN 1.107.1，安装名 `Trae CN.exe`）实测发现并修复了导致脚本完全失效的 bug。
-
-### 第一轮：主脚本重写
-
-| Bug | 现象 | 修复 |
-|-----|------|------|
-| CDP target 误选 | Electron 暴露多个 page（悬浮球 `floatingButton.html` + 主窗口），旧版取第一个 page，永远连到悬浮球，报"签到按钮不存在" | 优先选 URL 含 `solo-lite.html`/`workbench.html` 的 page |
-| 进程名硬编码 | `isTraeRunning`/`closeTrae` 只匹配 `*TRAE SOLO CN*`，本机进程名是 `Trae CN.exe`，检测恒为否、`--close` 杀不掉 | 匹配 `^(Trae\|TRAE).*\.exe$`，排除 `setup\|unins\|update` |
-| 安装包误判 | 自动扫描把 `Downloads\TRAE_CN-Setup-x64.exe` 当主程序启动，端口永远不开 | 文件名黑名单排除安装包/卸载器；扫描目录补 `%LOCALAPPDATA%\Programs` |
-| PS1 编码崩溃 | `locate-trae.ps1` 无 BOM，PowerShell 5.1 按 GBK 读中文直接解析报错，所有 bat 调用链失效 | ps1 补 UTF-8 BOM；Node 侧优先用 `pwsh` 7 |
-| 正则转义崩溃 | 模板字符串把 `\/` 变 `/`，注入页面的正则被截断报 `Invalid regular expression flags`；未登录检测用 `/登录/` 会被菜单里固定的"退出登录"误触发 | 异常分支加 undefined 防护；剔除"退出登录"后再匹配；打开菜单失败自动重试 3 轮 |
-
-### 第二轮：工具链与健壮性
-
-| Bug | 现象 | 修复 |
-|-----|------|------|
-| bat 中文解析崩溃 | `chcp 65001` + UTF-8 无 BOM 的中文 bat 在 cmd 下行偏移错位（`rem` 注释行被拆成命令执行、行被截断），且行为随行字节数漂移 | bat 改为全 ASCII（说明文字保留在 README 与 Node 脚本输出）；ps1 保持中文但必须带 BOM |
-| bat 延迟展开误判 | `launch-with-debug.bat` 在同一括号块内 set 后立即用 `%VAR%` 判断，解析期展开导致定位成功也报错 | 改用 `goto :run` 跳出块 |
-| echo 裸括号 | `uninstall-schedule.bat` 在 if 块内输出含 `(it may not exist)`，`)` 被当作块结束符 | 移除裸括号 |
-| 定位候选不含本机安装名 | ps1 候选名单与过滤器都不含 `Trae CN.exe`，pwsh 下也找不到 | 候选名补 `Trae CN.exe`，过滤器放宽为 `^Trae.*\.exe$` 并排除安装包 |
-| 杀进程按安装目录 | `relaunch-with-debug.ps1` 按 `*TRAE SOLO CN*` 过滤杀不到本机进程 | 改为杀 Trae 安装目录下全部进程（主程序 + 子进程 + 辅助工具） |
-| 端口归属不校验 | 任何应用监听 9222 都会被当成 Trae 连接（假服务测试中 `/json` 非数组直接崩） | 校验 `/json/version` 的 UA 含 `TraeCN`，`/json` 非数组时明确报错提示换端口 |
-| `--port` 不校验 | `--port abc` 得到 NaN，带着非法参数启动 Trae 白等 30 秒 | 解析后立即校验 1-65535 |
-| `--profile` 误杀主实例 | 独立 profile 与主实例并存是设计目标，但旧逻辑把"有 Trae 在运行"当冲突，`--force` 会连主账号实例一起杀 | profile 模式跳过运行检测，直接启动新实例 |
-| `readdirSync` 无保护 | 扫描 Trae 目录内容时权限拒绝会抛未捕获异常 | 补 try/catch |
-
-### 第三轮：双模式支持（Agent / IDEA）
-
-| Bug | 现象 | 修复 |
-|-----|------|------|
-| 只支持 Agent 模式 | Trae CN 启动后可能直接落在 IDEA 模式（`workbench.html`），其 DOM 没有 `account*` 类，脚本报"未找到签到按钮" | 新增 IDEA 模式入口：右上角签到横幅 `commercialBannerPopupPrimaryAction`，判定逻辑与菜单一致 |
-| IDEA 横幅是一次性弹窗 | 横幅被关闭后 IDEA 模式无任何签到入口 | 兜底点击 IDEA 窗口右上角"Agent ↗"（`icube-open-solo-lite-window-button`）打开 Agent 窗口重新探测；实测按钮即使 `display:none` 合成点击依然有效 |
-| 兜底逻辑短路 | `performCheckIn` 返回 `no_entry` 对象后 `!result` 恒为假，第二轮兜底永不触发 | 探测失败时把 `result` 清回 `null` |
-
-### agent-browser 实操结论，已写入技能文档 `.agents/skills/trae-checkin/SKILL.md` 与 `.agents/skills/agent-browser/SKILL.md`：
-
-1. 原生鼠标事件（`agent-browser click`）会被工作台遮挡层拦截（`Element is covered by <div>`），必须用 `eval` 执行 DOM 合成点击 `el.click()`；对 `display:none` 元素同样有效。
-2. Trae 冷启动时 UI 事件未挂载，点击头像无效，需要轮询加重试。
-3. `tab --url <pattern>` 在当前 CLI 版本（0.39.2）不可用，按 tab 编号切换（`tab t1`）。技能文档的 `tab --url <pattern>` 在当前 CLI 版本不可用，按 tab 编号切换（`tab t1`）。
-
-## 十一、项目文件说明
+## 十、项目文件说明
 
 ```text
 trae-daily-checkin/
 ├── package.json                  # 项目元数据（license: MIT）
 ├── LICENSE                       # MIT 许可证全文
 ├── README.md                     # 本文件
+├── CHANGELOG.md                  # 变更日志（按日期分组）
 ├── launch-with-debug.bat         # 双击启动 Trae（带调试端口，自动定位路径）
 ├── install-schedule.bat          # 一键注册"每日自动签到"任务计划
 ├── uninstall-schedule.bat        # 删除"每日自动签到"任务计划
@@ -362,12 +323,12 @@ trae-daily-checkin/
         └── skill-data/           # core/electron 等全量场景技能
 ```
 
-## 十二、许可证与第三方组件
+## 十一、许可证与第三方组件
 
 - 本项目自身以 **MIT** 许可发布，全文见 [LICENSE](LICENSE)。
 - 本仓库不含任何第三方源码；运行环境（Node.js，MIT）与外部工具（agent-browser，Apache-2.0）的出处、版本与合规说明，以及目标应用 Trae（专有软件）的使用边界，见 [docs/third-party.md](docs/third-party.md)。
 
-## 十三、后续可扩展
+## 十二、后续可扩展
 
 - 增加截图/日志落盘，方便排查失败原因。
 - 在 Windows 任务计划里直接触发，实现完全无人值守。
@@ -375,4 +336,4 @@ trae-daily-checkin/
 
 ---
 
-实现日期：2026-08-19
+初始实现：2026-08-19，变更记录见 [CHANGELOG.md](CHANGELOG.md)。
