@@ -9,6 +9,8 @@ description: 使用 agent-browser 完成 Trae（Trae CN / TRAE SOLO CN，Electro
 
 实测环境：TraeCN 1.107.1（Chrome 142 / Electron 39.2.7），Windows 11。本手册同时提供 agent-browser 手动操作流程与配套零依赖脚本 `src/auto-checkin.mjs`（项目根目录）两种方式。
 
+agent-browser CLI 的安装、通用命令与实测坑见同目录 [agent-browser 技能](../agent-browser/SKILL.md)；第三方组件的出处与许可证说明见 [docs/third-party.md](../../docs/third-party.md)。
+
 ## 前置条件
 
 1. Node.js >= 18（运行配套脚本）与 agent-browser CLI（`npm i -g agent-browser && agent-browser install`）。

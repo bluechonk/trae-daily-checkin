@@ -316,7 +316,8 @@ node src/auto-checkin.mjs --port 9223 --force --profile "D:\temp\trae-test-profi
 
 ```text
 trae-daily-checkin/
-├── package.json                  # 项目元数据
+├── package.json                  # 项目元数据（license: MIT）
+├── LICENSE                       # MIT 许可证全文
 ├── README.md                     # 本文件
 ├── launch-with-debug.bat         # 双击启动 Trae（带调试端口，自动定位路径）
 ├── install-schedule.bat          # 一键注册"每日自动签到"任务计划
@@ -326,11 +327,20 @@ trae-daily-checkin/
 │   └── relaunch-with-debug.ps1   # 强制重启 Trae 并开放端口（复用 locate-trae.ps1 定位）
 ├── src/
 │   └── auto-checkin.mjs          # 自动签到主脚本（Node 版路径定位：自定义/自动扫描）
-└── .agents/skills/trae-checkin/
-    └── SKILL.md                  # agent-browser 实操 Trae 签到的技能手册
+├── docs/
+│   ├── README.md                 # 文档目录入口
+│   └── third-party.md            # 第三方引用清单与许可证合规说明
+└── .agents/skills/
+    ├── trae-checkin/SKILL.md     # agent-browser 实操 Trae 签到的技能手册
+    └── agent-browser/SKILL.md    # agent-browser CLI 项目实操手册（含实测坑）
 ```
 
-## 十二、后续可扩展
+## 十二、许可证与第三方组件
+
+- 本项目自身以 **MIT** 许可发布，全文见 [LICENSE](LICENSE)。
+- 本仓库不含任何第三方源码；运行环境（Node.js，MIT）与外部工具（agent-browser，Apache-2.0）的出处、版本与合规说明，以及目标应用 Trae（专有软件）的使用边界，见 [docs/third-party.md](docs/third-party.md)。
+
+## 十三、后续可扩展
 
 - 增加截图/日志落盘，方便排查失败原因。
 - 在 Windows 任务计划里直接触发，实现完全无人值守。
