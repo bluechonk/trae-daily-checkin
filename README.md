@@ -75,7 +75,7 @@ Trae CN 有两种模式，签到入口不同，脚本按"solo-lite 优先、work
 | 模式 | 主窗口 target | 签到入口 |
 |------|--------------|----------|
 | Agent 模式（Build With TRAE） | `solo/solo-lite.html` | 左下角头像 → 账户菜单 |
-| IDEA/SOLO 模式 | `workbench/workbench.html` | 右上角签到横幅（一次性）；横幅关闭后经"Agent ↗"打开 Agent 窗口签到 |
+| IDEA/SOLO 模式 | `workbench/workbench.html` | 右上角签到横幅（一次性）→ 头像用户卡片 → "Agent ↗" 兜底 |
 
 | 元素 | 选择器/特征 | 模式 |
 |------|-------------|------|
@@ -84,13 +84,14 @@ Trae CN 有两种模式，签到入口不同，脚本按"solo-lite 优先、work
 | 签到按钮（菜单） | 类名前缀 `accountCheckinButton`；已签时 `disabled=true` | Agent |
 | 签到按钮文字 | 类名前缀 `accountCheckinButtonLabel`；未签"签到"，已签"已签到" | Agent |
 | 签到横幅按钮 | 类名前缀 `commercialBannerPopupPrimaryAction`（临时弹窗，关闭后消失） | IDEA |
-| 模式切换按钮 | 类名前缀 `icube-open-solo-lite-window-button`（"Agent ↗"，横幅消失时的兜底入口） | IDEA |
+| 头像用户卡片 | 自定义元素 `icube-user-card` 的 shadowRoot，移除 `.user-card-wrapper` 的 `hidden` 类显示菜单，按钮为 `icube-user-card__checkin-button` | IDEA |
+| 模式切换按钮 | 类名前缀 `icube-open-solo-lite-window-button`（"Agent ↗"，最终兜底） | IDEA |
 
 由于 CSS 类名是工具生成的哈希后缀（如 `accountCheckinButton-hoMtQt`），脚本里使用 `*[class*="accountCheckinButton"]` 这种前缀匹配，比完全固定类名更抗更新。
 
-状态判定以按钮 `disabled` 属性和文本双重校验：`disabled=true` 或文本含"已签"即今日已签。IDEA 模式横幅被关闭后，脚本会点击 IDEA 窗口右上角的"Agent ↗"按钮打开 Agent 窗口，再走头像菜单流程完成签到。
+状态判定以按钮 `disabled` 属性和文本双重校验：`disabled=true` 或文本含"已签"即今日已签（SOLO 卡片的按钮已签时未必置 disabled，文本判定必留）。IDEA/SOLO 模式横幅被关闭后，脚本会显示常驻的头像用户卡片（穿透 shadowRoot 操作），仍不可用时点击"Agent ↗"打开 Agent 窗口完成签到。
 
-> IDEA/SOLO 模式下"设置"齿轮右侧也有一枚用户头像（自定义元素 `icube-user-profile`，shadowRoot 内 `.user-avatar-circle`），人工点击会弹出同款签到菜单。实测该入口无法被 CDP 自动化——titlebar 拖拽区（`-webkit-app-region: drag`）在合成器层拦截，真实输入事件同样无效，因此脚本不依赖它，功能由横幅 + "Agent ↗"兜底完整覆盖。
+> IDEA/SOLO 模式下"设置"齿轮右侧也有一枚用户头像（自定义元素 `icube-user-profile`，shadowRoot 内 `.user-avatar-circle`），人工点击会弹出同款签到菜单。实测该入口无法被 CDP 自动化——titlebar 拖拽区（`-webkit-app-region: drag`）在合成器层拦截，真实输入事件同样无效；因此脚本直接显示常驻的 `icube-user-card` 组件替代，不依赖真实点击。
 
 ## 五、核心脚本设计
 

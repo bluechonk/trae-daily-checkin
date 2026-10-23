@@ -422,16 +422,24 @@ async function connectPage(pageTarget) {
 // -------------------------------------------------------------
 // 5. DOM 操作：按页面探测签到入口并点击
 //    入口 A（Agent 模式 solo-lite）：点头像 -> 菜单 accountPopover -> accountCheckinButton
-//    入口 B（IDEA 模式 workbench）：右上角自动弹的签到横幅 commercialBannerPopupPrimaryAction
-//    两种入口的判定一致：按钮 disabled 或文本含"已签"即今日已签。
+//    入口 B1（IDEA/SOLO 模式 workbench）：右上角签到横幅 commercialBannerPopupPrimaryAction
+//    入口 B2（IDEA/SOLO 模式 workbench）：头像用户卡片 icube-user-card（shadow 内
+//      icube-user-card__checkin-button；人工入口是点头像，但被 titlebar 拖拽区
+//      拦截无法自动化，改为移除卡片 shadow 内 .user-card-wrapper 的 hidden 类直接显示）
+//    兜底：全部无入口时点"Agent ↗"打开 Agent 窗口。
+//    判定一致：按钮 disabled 或文本含"已签"即今日已签。
 //    注意：必须用 DOM 合成点击 el.click()。
 //    实测 CDP 的原生鼠标事件会被浮层遮挡拦截，合成点击不受影响。
 // -------------------------------------------------------------
-async function clickAndVerify(cdp, selector) {
+async function clickAndVerify(cdp, selector, shadowHost = null) {
   const { evaluate } = cdp;
+  // shadowHost 指定时按钮位于其 shadowRoot 内（SOLO 模式的用户卡片）
+  const q = shadowHost
+    ? `document.querySelector('${shadowHost}').shadowRoot.querySelector('${selector}')`
+    : `document.querySelector('${selector}')`;
   console.log('[INFO] 尝试点击签到按钮...');
   const clicked = await evaluate(`(() => {
-    const btn = document.querySelector('${selector}');
+    const btn = ${q};
     if (!btn || btn.disabled) return false;
     btn.click();
     return true;
@@ -441,7 +449,7 @@ async function clickAndVerify(cdp, selector) {
   }
   await sleep(2000);
   const verify = await evaluate(`(() => {
-    const btn = document.querySelector('${selector}');
+    const btn = ${q};
     if (!btn) return 'button_gone';
     const label = btn.querySelector('[class*="accountCheckinButtonLabel"]');
     return { text: ((label ? label.textContent : btn.textContent) || '').trim(), disabled: !!btn.disabled };
@@ -528,7 +536,8 @@ async function performCheckIn(cdp) {
     console.log('[WARN] 头像菜单内未找到签到按钮，尝试其它入口...');
   }
 
-  // ---- 入口 B：IDEA 模式签到横幅 ----
+  // ---- 入口 B：IDEA/SOLO 模式（workbench）----
+  // B1：右上角签到横幅（一次性弹窗，弹出时存在）
   const banner = await evaluate(`
     (() => {
       const btn = document.querySelector('[class*="commercialBannerPopupPrimaryAction"]');
@@ -543,6 +552,39 @@ async function performCheckIn(cdp) {
       return { status: 'already_signed', detail: b.text };
     }
     return clickAndVerify(cdp, '[class*="commercialBannerPopupPrimaryAction"]');
+  }
+
+  // B2：头像用户卡片。人工入口是点击设置齿轮右侧的头像（icube-user-profile），
+  // 但该入口被 titlebar 拖拽区拦截无法自动化；改为直接显示页面自带的
+  // icube-user-card 组件（移除其 shadow 内 .user-card-wrapper 的 hidden 类），
+  // 签到按钮为 icube-user-card__checkin-button，判定逻辑与其它入口一致。
+  const card = await evaluate(`
+    (() => {
+      const card = document.querySelector('icube-user-card');
+      if (!card || !card.shadowRoot) return null;
+      const wrap = card.shadowRoot.querySelector('.user-card-wrapper');
+      const btn = card.shadowRoot.querySelector('[class*="icube-user-card__checkin-button"]');
+      if (!wrap || !btn) return null;
+      wrap.classList.remove('hidden');
+      return { text: (btn.textContent || '').trim(), disabled: !!btn.disabled };
+    })()
+  `);
+  const cb = card.result.result.value;
+  if (cb) {
+    console.log(`[INFO] SOLO 头像卡片状态: ${JSON.stringify(cb)}`);
+    let out;
+    if (cb.disabled || /已签/.test(cb.text)) {
+      out = { status: 'already_signed', detail: cb.text };
+    } else {
+      out = await clickAndVerify(cdp, '[class*="icube-user-card__checkin-button"]', 'icube-user-card');
+    }
+    // 恢复卡片隐藏，不留展开痕迹
+    await evaluate(`(() => {
+      const w = document.querySelector('icube-user-card')?.shadowRoot?.querySelector('.user-card-wrapper');
+      if (w) w.classList.add('hidden');
+      return true;
+    })()`);
+    return out;
   }
 
   return { status: 'no_entry' };

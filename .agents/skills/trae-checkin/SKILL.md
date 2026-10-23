@@ -65,11 +65,11 @@ Trae CN 启动后有两种模式，**签到入口不同**，脚本按"solo-lite 
 | 签到按钮（菜单） | `[class*="accountCheckinButton"]` | 未签可点；已签文本"已签到"且 `disabled=true` |
 | 签到横幅（IDEA） | `[class*="commercialBannerPopupPrimaryAction"]` | 判定同上；横幅是临时弹窗，被关闭后 DOM 里就没了 |
 
-状态判定（两种入口一致）：按钮 `disabled=true` 或文本含"已签"即今日已签；点击后 2 秒复读文本或 `disabled` 验证成功。
+状态判定（所有入口一致）：按钮 `disabled=true` 或文本含"已签"即今日已签（注意 SOLO 卡片的按钮已签时未必置 disabled，文本判定必留）；点击后 2 秒复读文本或 `disabled` 验证成功。
 
-IDEA 模式横幅消失后的兜底：点击 IDEA 窗口右上角的 `icube-open-solo-lite-window-button`（"Agent ↗"）打开 Agent 模式窗口，再走头像菜单流程。实测该按钮即使处于 `display:none`（`data-titlebar-presentation="hidden"`），DOM 合成点击依然生效。
+IDEA/SOLO 模式的第三个入口——头像用户卡片：人工操作是点击顶部"设置"齿轮右侧的头像（自定义元素 `icube-user-profile`，shadowRoot 内 `.user-avatar-circle`），弹出 `icube-user-card` 组件（shadowRoot 内含完整账户菜单）。实测人工点击无法被 CDP 复现——DOM 合成点击与真实 `Input.dispatchMouseEvent`（多坐标、完整事件序列、窗口激活后重试）均无效，DOM 观察确认无菜单节点产生，疑似 titlebar 拖拽区（`-webkit-app-region: drag`）在合成器层拦截，该层拦截连真实输入都过不去。
 
-SOLO 模式还有一个人工入口：顶部"设置"齿轮右侧的头像（自定义元素 `icube-user-profile`，shadowRoot 内为 `.user-avatar-circle` / `img.user-avatar-image`），点击弹出与 Agent 模式同款的签到菜单。**实测该入口无法通过 CDP 自动化**：DOM 合成点击与真实 `Input.dispatchMouseEvent`（多坐标、完整事件序列）均无法触发菜单，DOM 观察确认点击无任何菜单节点产生，疑似 titlebar 拖拽区（`-webkit-app-region: drag`）在合成器层拦截，该层拦截连真实输入都过不去。因此 SOLO 模式的自动化路径为：横幅 → "Agent ↗" 兜底，签到功能不受影响。
+自动化改走组件本身：`icube-user-card` 常驻 DOM（菜单隐藏时其 shadowRoot 里 `.user-card-wrapper` 带 `hidden` 类），移除该类即可显示菜单，签到按钮为 shadow 内的 `[class*="icube-user-card__checkin-button"]`（querySelector 需穿透 shadowRoot）。签到完成后把 `hidden` 类加回去恢复原状。若两者都不可用，最后兜底：点击 IDEA 窗口右上角的 `icube-open-solo-lite-window-button`（"Agent ↗"）打开 Agent 模式窗口再走头像菜单流程。实测该按钮即使处于 `display:none`（`data-titlebar-presentation="hidden"`），DOM 合成点击依然生效。
 
 ## 关键坑（实测结论，绕不开）
 
