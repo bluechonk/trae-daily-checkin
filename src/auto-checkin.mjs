@@ -1,25 +1,22 @@
 // src/auto-checkin.mjs
-// 通过 Chrome DevTools Protocol (CDP) 自动完成 Trae SOLO CN 每日签到。
+// 通过 Chrome DevTools Protocol (CDP) 自动完成 Trae 每日签到。
 // 零第三方依赖：Node >= 18 自带的 fetch / WebSocket。
+//
+// 2026-10-23 重写，修复实测发现的 bug：
+//   1) CDP target 误选：Electron 存在多个 page（floatingButton.html 浮窗），
+//      必须优先选择主工作台（solo-lite.html / workbench），否则永远找不到签到按钮。
+//   2) 进程名硬编码 *TRAE SOLO CN*：实际安装名是 Trae CN.exe（还有 Trae.exe），
+//      导致"是否在运行"永远判否、--close 关不掉进程。
+//   3) 自动定位误把 Downloads 里的安装包 TRAE_CN-Setup-x64.exe 当主程序启动。
+//   4) 未登录误判：账户菜单里固定有"退出登录"，用 /登录/ 匹配必然误报。
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 
 // -------------------------------------------------------------
-// 0. 解析命令行参数（优先）与环境变量（回退）
-//    用法：
-//      node src/auto-checkin.mjs
-//      node src/auto-checkin.mjs --port 9223 --force
-//      node src/auto-checkin.mjs --dir "C:\Program Files\TRAE SOLO CN\TRAE SOLO CN.exe" --port 9223 --profile "%TEMP%\trae-test-profile"
-//    参数：
-//      --exe / --dir <path>   Trae 可执行文件路径（不传则自动扫描定位）
-//      --port <n>             CDP 调试端口（默认 9222）
-//      --force                已运行但无调试端口时强制重启 Trae（也可 --force 1）
-//      --profile <path>       使用独立 user-data-dir（profile）启动，隔离测试用
-//      --close                签到完成后关闭 Trae 进程
-//      -h, --help             显示帮助
+// 0. 参数解析（命令行 > 环境变量 > 自动定位）
 // -------------------------------------------------------------
 function parseOptions() {
   const argv = process.argv.slice(2);
@@ -39,6 +36,11 @@ function parseOptions() {
 
 const OPTS = parseOptions();
 
+if (!Number.isInteger(OPTS.port) || OPTS.port < 1 || OPTS.port > 65535) {
+  console.error(`[ERROR] --port 必须是 1-65535 的整数，当前值: ${OPTS.port}`);
+  process.exit(1);
+}
+
 if (OPTS.help) {
   console.log(`用法：
   node src/auto-checkin.mjs [选项]
@@ -54,7 +56,6 @@ if (OPTS.help) {
 示例：
   node src/auto-checkin.mjs
   node src/auto-checkin.mjs --port 9223 --force
-  node src/auto-checkin.mjs --dir "D:\\Tools\\TRAE SOLO CN\\TRAE SOLO CN.exe" --port 9223 --profile "D:\\temp\\trae-test-profile"
   node src/auto-checkin.mjs --port 9223 --force --close
 
 优先级说明：命令行参数 > 环境变量 > 自动扫描定位。
@@ -68,46 +69,66 @@ const USER_DATA_DIR = OPTS.profile;
 const CLI_EXE = OPTS.exe;
 const CLOSE_AFTER_CHECKIN = OPTS.close;
 
-// 启动调试端口时追加的参数（独立 profile 用）
+// 强制走 127.0.0.1（IPv4），避免 localhost 解析到 IPv6 后连上其它监听同端口的应用
+const DEBUG_URL = `http://127.0.0.1:${DEBUG_PORT}`;
+
 function debugLaunchArgs() {
   const args = [`--remote-debugging-port=${DEBUG_PORT}`];
-  if (USER_DATA_DIR) args.push(`--user-data-dir="${USER_DATA_DIR}"`);
-  return args.join(' ');
+  if (USER_DATA_DIR) args.push(`--user-data-dir=${USER_DATA_DIR}`);
+  return args;
 }
 
 // -------------------------------------------------------------
-// 0. 解析 Trae 可执行文件路径
-//    优先级：环境变量 TRAECHECKIN_EXE > 正在运行的进程 > 注册表 > 常见安装位置
+// 1. PowerShell 选择：优先 pwsh 7，回退系统自带 powershell
+// -------------------------------------------------------------
+function resolvePs() {
+  try {
+    const r = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], { encoding: 'utf8', timeout: 10_000 });
+    if (r.status === 0 && Number.parseInt(r.stdout, 10) >= 6) return 'pwsh';
+  } catch { /* 继续回退 */ }
+  return 'powershell';
+}
+const PS = resolvePs();
+
+function runPs(script) {
+  return new Promise((resolve) => {
+    const p = spawn(PS, ['-NoProfile', '-NonInteractive', '-Command', script]);
+    let out = '';
+    p.stdout.on('data', d => out += d.toString());
+    p.on('close', () => resolve(out));
+    p.on('error', () => resolve(''));
+  });
+}
+
+// -------------------------------------------------------------
+// 2. Trae 可执行文件定位
+//    优先级：命令行参数 > 运行中进程 > 注册表 > 常见安装目录
+//    匹配规则：文件名 ^Trae.*\.exe$，排除安装包/卸载器/辅助进程
 // -------------------------------------------------------------
 const COMMON_INSTALL_DIRS = [
+  () => path.join(process.env.LOCALAPPDATA || '', 'Programs'),
   'C:\\Program Files',
   'C:\\Program Files (x86)',
   'D:\\Program Files',
   'D:\\Software',
   'E:\\Software',
   'D:\\',
-  'C:\\Users\\',
+  () => process.env.USERPROFILE || 'C:\\Users',
 ];
+
+// 安装包/卸载器/辅助进程一律不算主程序（曾把 TRAE_CN-Setup-x64.exe 误当主程序）
+const EXE_NAME_BLACKLIST = /(setup|unins|update|installer|crashpad|agent-tool-host|doctor|task_host)/i;
 
 function looksLikeTraeExe(p) {
   if (!p || typeof p !== 'string') return false;
-  const name = path.basename(p).toLowerCase();
-  const dir = p.toLowerCase();
-  return /trae.*\.exe$/.test(name) && !dir.includes('agent-tool-host');
+  const name = path.basename(p);
+  if (!/^Trae.*\.exe$/i.test(name)) return false;
+  return !EXE_NAME_BLACKLIST.test(name);
 }
 
-async function runPs(script) {
-  return new Promise((resolve) => {
-    // 不加 shell：直接以参数数组启动 powershell.exe，避免 cmd 解析特殊字符 & DEP0190 警告
-    const p = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script]);
-    let out = '';
-    p.stdout.on('data', d => out += d.toString());
-    p.on('close', () => resolve(out.trim()));
-    p.on('error', () => resolve(''));
-  });
-}
+const EXE_CANDIDATE_NAMES = ['Trae CN.exe', 'TRAE SOLO CN.exe', 'Trae.exe', 'TRAE.exe'];
 
-// 1) 正在运行的 Trae 进程，拿它的真实可执行路径
+// 运行中进程（含主程序名变体：Trae CN / TRAE SOLO CN / Trae）
 async function scanRunningProcess() {
   const out = await runPs(
     `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath } | Select-Object -ExpandProperty ExecutablePath -Unique`
@@ -122,7 +143,6 @@ async function scanRunningProcess() {
   return null;
 }
 
-// 2) 从注册表卸载项里找 Trae 的 InstallLocation
 async function scanRegistry() {
   const out = await runPs(`
     $roots = @(
@@ -134,7 +154,7 @@ async function scanRegistry() {
       if (Test-Path $r) {
         Get-ChildItem $r | ForEach-Object {
           $v = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue)
-          if ($v.DisplayName -like '*Trae*') { $v.InstallLocation }
+          if ($v.DisplayName -match 'Trae' -and $v.InstallLocation) { $v.InstallLocation }
         }
       }
     }
@@ -143,18 +163,27 @@ async function scanRegistry() {
   for (const line of out.split(/\r?\n/)) {
     const dir = line.trim();
     if (!dir) continue;
-    for (const name of ['TRAE SOLO CN.exe', 'Trae.exe', 'TRAE.exe']) {
+    for (const name of EXE_CANDIDATE_NAMES) {
       const candidate = path.join(dir, name);
       if (fs.existsSync(candidate)) {
         console.log(`[INFO] 从注册表定位到 Trae: ${candidate}`);
         return candidate;
       }
     }
+    // InstallLocation 下按文件名规则兜底扫描（应对未来版本改名）
+    try {
+      for (const e of fs.readdirSync(dir)) {
+        const candidate = path.join(dir, e);
+        if (looksLikeTraeExe(candidate)) {
+          console.log(`[INFO] 从注册表定位到 Trae: ${candidate}`);
+          return candidate;
+        }
+      }
+    } catch { /* 目录不可读则跳过 */ }
   }
   return null;
 }
 
-// 3) 常见安装目录下做有限深度的文件扫描（避免全盘遍历太慢）
 function scanCommonDirs(maxDepth = 3) {
   const hit = [];
   const walk = (dir, depth) => {
@@ -163,24 +192,31 @@ function scanCommonDirs(maxDepth = 3) {
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
     catch { return; }
     for (const e of entries) {
+      if (hit.length) return;
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
         if (e.name.toLowerCase().includes('trae')) {
-          // 命中 Trae 安装目录，直接找 exe
-          for (const n of ['TRAE SOLO CN.exe', 'Trae.exe', 'TRAE.exe']) {
+          for (const n of EXE_CANDIDATE_NAMES) {
             const exe = path.join(full, n);
             if (fs.existsSync(exe)) { hit.push(exe); return; }
           }
+          try {
+            for (const e2 of fs.readdirSync(full)) {
+              const exe = path.join(full, e2);
+              if (looksLikeTraeExe(exe) && fs.existsSync(exe)) { hit.push(exe); return; }
+            }
+          } catch { /* 目录不可读则跳过 */ }
         }
         walk(full, depth + 1);
-      } else if (e.name.toLowerCase().endsWith('.exe') && looksLikeTraeExe(full)) {
-        hit.push(full); return;
+      } else if (looksLikeTraeExe(full)) {
+        hit.push(full);
+        return;
       }
     }
   };
   for (const base of COMMON_INSTALL_DIRS) {
-    const root = base.replace('C:\\Users\\', process.env.USERPROFILE + '\\');
-    if (!fs.existsSync(root)) continue;
+    const root = typeof base === 'function' ? base() : base;
+    if (!root || !fs.existsSync(root)) continue;
     walk(root, 0);
     if (hit.length) break;
   }
@@ -196,6 +232,9 @@ async function resolveTraePath() {
     if (!fs.existsSync(CLI_EXE)) {
       throw new Error(`--exe/--dir 指定的路径不存在：${CLI_EXE}`);
     }
+    if (!looksLikeTraeExe(CLI_EXE)) {
+      throw new Error(`--exe/--dir 指定的路径不是 Trae 主程序（安装包/卸载器不可用）：${CLI_EXE}`);
+    }
     console.log(`[INFO] 使用命令行指定的 Trae 路径: ${CLI_EXE}`);
     return CLI_EXE;
   }
@@ -208,91 +247,67 @@ async function resolveTraePath() {
   if (found) return found;
 
   throw new Error(
-    '未找到 Trae SOLO CN 可执行文件。\n' +
+    '未找到 Trae 可执行文件。\n' +
     '请通过命令行参数指定：\n' +
-    '  node src/auto-checkin.mjs --dir "你的\\TRAE SOLO CN\\TRAE SOLO CN.exe"\n' +
+    '  node src/auto-checkin.mjs --dir "你的\\Trae CN\\Trae CN.exe"\n' +
     '脚本会依次尝试：正在运行的进程 -> 注册表卸载项 -> 常见安装目录。'
   );
 }
 
 const TRAE_EXE = await resolveTraePath();
 
-// 强制使用 127.0.0.1（IPv4）：避免 localhost 优先解析到 IPv6，导致连到其它也监听 9222 的应用（如豆包）
-const DEBUG_URL = `http://127.0.0.1:${DEBUG_PORT}`;
-const WS_URL = `${DEBUG_URL}/json`;
-
 // -------------------------------------------------------------
-// 1. 确保 Trae 已启动且调试端口可用
+// 3. 进程与端口管理
+//    进程过滤不再硬编码 TRAE SOLO CN，兼容 Trae CN / Trae / TRAE SOLO CN
 // -------------------------------------------------------------
-async function ensureDebugPort() {
-  // 1.1 端口已开，直接返回
-  if (await isPortOpen()) {
-    console.log('[OK] 调试端口已开放');
-    return;
-  }
+function traeProcFilterPs() {
+  return `
+    $_.ExecutablePath -and
+    ((Split-Path $_.ExecutablePath -Leaf) -match '^(Trae|TRAE).*\\.exe$') -and
+    $_.ExecutablePath -notmatch '(?i)setup|unins|update|installer|agent-tool-host'
+  `;
+}
 
-  const running = await isTraeRunning();
-
-  // 1.2 没有运行，直接启动并带调试端口
-  if (!running) {
-    console.log('[INFO] Trae 未运行，正在启动并开放调试端口...');
-    launchTraeWithDebug();
-    await waitForPort(30_000);
-    return;
-  }
-
-  // 1.3 正在运行但没有调试端口：默认安全退出，可选强制重启
-  if (running) {
-    if (FORCE_RELAUNCH) {
-      console.log('[WARN] 强制重启 Trae 以开放调试端口（可能丢失未保存内容）...');
-      await closeTrae();
-      launchTraeWithDebug();
-      await waitForPort(30_000);
-      return;
-    }
-    throw new Error(
-      `Trae 正在运行，但未开启调试端口。\n` +
-      `请先关闭 Trae，然后运行：\n` +
-      `  "${TRAE_EXE}" ${debugLaunchArgs()}\n` +
-      `或加 --force 参数让脚本自动重启：node src/auto-checkin.mjs --force`
-    );
+// 探测端口状态并识别是否为 Trae 的 CDP（其它应用监听同端口时不能误连）
+async function probePort() {
+  try {
+    const res = await fetch(`${DEBUG_URL}/json/version`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return { open: false, isTrae: false };
+    const info = await res.json();
+    const ua = `${info.Browser || ''} ${info['User-Agent'] || ''}`;
+    return { open: true, isTrae: /trae/i.test(ua) };
+  } catch {
+    return { open: false, isTrae: false };
   }
 }
 
 async function isPortOpen() {
-  try {
-    const res = await fetch(`${DEBUG_URL}/json/version`, { signal: AbortSignal.timeout(3000) });
-    return res.ok;
-  } catch {
-    return false;
-  }
+  return (await probePort()).open;
 }
 
 async function isTraeRunning() {
-  const cmd = `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '*TRAE SOLO CN*' } | Select-Object ProcessId`;
-  return new Promise((resolve, reject) => {
-    const p = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd]);
-    let out = '';
-    p.stdout.on('data', d => out += d.toString());
-    p.on('close', () => resolve(/ProcessId/.test(out) && out.trim().split('\n').length > 1));
-    p.on('error', reject);
-  });
+  const cmd = `@($(Get-CimInstance Win32_Process | Where-Object { ${traeProcFilterPs()} }).Count)`;
+  const out = (await runPs(cmd)).trim();
+  return Number.parseInt(out, 10) > 0;
 }
 
 function launchTraeWithDebug() {
-  // 用 start 命令脱离当前进程，避免 Node 持有子进程句柄导致关闭时 UV 断言崩溃
-  const cmd = `start "" "${TRAE_EXE}" ${debugLaunchArgs()}`;
-  spawn('cmd', ['/c', cmd], {
+  // detached + stdio ignore + unref：子进程脱离父进程，Node 退出不影响 Trae
+  const child = spawn(TRAE_EXE, debugLaunchArgs(), {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
-  }).unref();
+  });
+  child.unref();
 }
 
 async function closeTrae() {
-  const cmd = `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '*TRAE SOLO CN*' -or $_.Name -eq 'agent-tool-host.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+  const cmd = `
+    Get-CimInstance Win32_Process | Where-Object { ${traeProcFilterPs()} } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  `;
   return new Promise((resolve, reject) => {
-    const p = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd]);
+    const p = spawn(PS, ['-NoProfile', '-NonInteractive', '-Command', cmd]);
     p.on('close', () => resolve());
     p.on('error', reject);
   });
@@ -301,23 +316,83 @@ async function closeTrae() {
 async function waitForPort(timeoutMs) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (await isPortOpen()) return;
+    const { open, isTrae } = await probePort();
+    if (open && isTrae) return;
     await sleep(500);
   }
-  throw new Error('等待调试端口超时');
+  throw new Error('等待 Trae 调试端口超时（若端口被其它应用占用，请用 --port 换端口重试）');
+}
+
+async function ensureDebugPort() {
+  const { open, isTrae } = await probePort();
+
+  if (open && isTrae) {
+    console.log('[OK] 调试端口已开放');
+    return;
+  }
+  if (open && !isTrae) {
+    throw new Error(`端口 ${DEBUG_PORT} 被其它应用占用（不是 Trae 的调试端口）。请用 --port 换一个端口重试。`);
+  }
+
+  // 独立 profile 是独立 Electron 实例，可与正在运行的主实例并存，无需检测/强杀
+  if (USER_DATA_DIR) {
+    console.log('[INFO] 独立 profile 模式：直接启动新实例...');
+    launchTraeWithDebug();
+    await waitForPort(30_000);
+    return;
+  }
+
+  const running = await isTraeRunning();
+
+  if (!running) {
+    console.log('[INFO] Trae 未运行，正在启动并开放调试端口...');
+    launchTraeWithDebug();
+    await waitForPort(30_000);
+    return;
+  }
+
+  if (FORCE_RELAUNCH) {
+    console.log('[WARN] 强制重启 Trae 以开放调试端口（可能丢失未保存内容）...');
+    await closeTrae();
+    await sleep(2000);
+    launchTraeWithDebug();
+    await waitForPort(30_000);
+    return;
+  }
+
+  throw new Error(
+    `Trae 正在运行，但未开启调试端口。\n` +
+    `请先关闭 Trae，然后运行：\n` +
+    `  "${TRAE_EXE}" ${debugLaunchArgs().join(' ')}\n` +
+    `或加 --force 参数让脚本自动重启：node src/auto-checkin.mjs --force`
+  );
 }
 
 // -------------------------------------------------------------
-// 2. CDP 连接工具
+// 4. CDP 连接
+//    Trae CN 有两种模式，签到入口不同：
+//      - Agent 模式（solo-lite.html）：点头像弹菜单，按钮类名 accountCheckinButton
+//      - IDEA 模式（workbench.html）：右上角自动弹签到横幅，按钮类名 commercialBannerPopupPrimaryAction
+//    因此不能只连一个 target：列出全部 page，按优先级逐个探测有签到入口的页面。
 // -------------------------------------------------------------
-async function connectCDP() {
-  const res = await fetch(WS_URL);
-  const targets = await res.json();
-  const pageTarget = targets.find(t => t.type === 'page');
-  if (!pageTarget) {
-    throw new Error('未找到 page 类型的 CDP target');
-  }
+function pagePriority(url) {
+  if (/solo-lite\.html/i.test(url)) return 2;
+  if (/workbench\.html/i.test(url)) return 1;
+  return 0;
+}
 
+async function listPageTargets() {
+  const res = await fetch(`${DEBUG_URL}/json`);
+  const data = await res.json();
+  if (!Array.isArray(data)) {
+    throw new Error(`CDP /json 返回异常数据，端口 ${DEBUG_PORT} 可能被其它应用占用（请用 --port 换端口）`);
+  }
+  return data
+    .filter(t => t.type === 'page')
+    .sort((a, b) => pagePriority(b.url) - pagePriority(a.url));
+}
+
+async function connectPage(pageTarget) {
   const ws = new WebSocket(pageTarget.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     ws.addEventListener('open', resolve);
@@ -345,120 +420,255 @@ async function connectCDP() {
 }
 
 // -------------------------------------------------------------
-// 3. DOM 操作：打开头像菜单、检测并点击签到
+// 5. DOM 操作：按页面探测签到入口并点击
+//    入口 A（Agent 模式 solo-lite）：点头像 -> 菜单 accountPopover -> accountCheckinButton
+//    入口 B1（IDEA/SOLO 模式 workbench）：右上角签到横幅 commercialBannerPopupPrimaryAction
+//    入口 B2（IDEA/SOLO 模式 workbench）：头像用户卡片 icube-user-card（shadow 内
+//      icube-user-card__checkin-button；人工入口是点头像，但被 titlebar 拖拽区
+//      拦截无法自动化，改为移除卡片 shadow 内 .user-card-wrapper 的 hidden 类直接显示）
+//    兜底：全部无入口时点"Agent ↗"打开 Agent 窗口。
+//    判定一致：按钮 disabled 或文本含"已签"即今日已签。
+//    注意：必须用 DOM 合成点击 el.click()。
+//    实测 CDP 的原生鼠标事件会被浮层遮挡拦截，合成点击不受影响。
 // -------------------------------------------------------------
-async function performCheckIn(cdp) {
+async function clickAndVerify(cdp, selector, shadowHost = null) {
   const { evaluate } = cdp;
-
-  // 3.1 打开账户菜单（状态感知：如果已经打开就不再点）
-  const menuAlreadyOpen = await evaluate(`!!document.querySelector('[class*="accountPopover"]')`);
-  if (!menuAlreadyOpen.result.result.value) {
-    console.log('[INFO] 点击左下角头像...');
-    await evaluate(`
-      (() => {
-        const el = document.querySelector('[class*="accountTrigger"]');
-        if (el) { el.click(); return true; }
-        return false;
-      })()
-    `);
-    // 菜单渲染可能需要时间，轮询等待最多 5 秒
-    for (let i = 0; i < 10; i++) {
-      await sleep(500);
-      const open = await evaluate(`!!document.querySelector('[class*="accountPopover"]')`);
-      if (open.result.result.value) break;
-    }
-  } else {
-    console.log('[INFO] 账户菜单已经打开');
-  }
-
-  // 3.2 读取签到按钮当前状态
-  const inspect = await evaluate(`
-    (() => {
-      const btn = document.querySelector('[class*="accountCheckinButton"]');
-      const label = document.querySelector('[class*="accountCheckinButtonLabel"]');
-      if (!btn) return { error: 'checkin_button_not_found' };
-      return {
-        buttonText: label ? (label.textContent || '').trim() : (btn.textContent || '').trim(),
-        title: (document.querySelector('[class*="accountCheckinTitle"]')?.textContent || '').trim()
-      };
-    })()
-  `);
-  const state = inspect.result.result.value;
-  console.log(`[INFO] 签到按钮状态: ${JSON.stringify(state)}`);
-
-  if (state.error) {
-    // 区分"未登录"与"类名已变化"：检查账户菜单里是否出现登录入口
-    const loginHint = await evaluate(`
-      (() => {
-        const menu = document.querySelector('[class*="accountPopover"]');
-        if (!menu) return { menuOpen: false };
-        const t = (menu.textContent || '');
-        return {
-          menuOpen: true,
-          hasLogin: /登录|扫码|立即登录|手机号/.test(t),
-          sample: t.replace(/\\s+/g, ' ').slice(0, 80)
-        };
-      })()
-    `);
-    const hint = loginHint.result.result.value;
-    if (hint.menuOpen && hint.hasLogin) {
-      return { status: 'not_logged_in', detail: hint.sample };
-    }
-    throw new Error('未找到每日签到按钮，可能类名已变化');
-  }
-
-  if (/已签/.test(state.buttonText)) {
-    return { status: 'already_signed', detail: state.buttonText };
-  }
-
-  // 3.3 点击签到按钮
+  // shadowHost 指定时按钮位于其 shadowRoot 内（SOLO 模式的用户卡片）
+  const q = shadowHost
+    ? `document.querySelector('${shadowHost}').shadowRoot.querySelector('${selector}')`
+    : `document.querySelector('${selector}')`;
   console.log('[INFO] 尝试点击签到按钮...');
-  const clicked = await evaluate(`
-    (() => {
-      const btn = document.querySelector('[class*="accountCheckinButton"]');
-      if (!btn) return false;
-      btn.click();
-      return true;
-    })()
-  `);
-
+  const clicked = await evaluate(`(() => {
+    const btn = ${q};
+    if (!btn || btn.disabled) return false;
+    btn.click();
+    return true;
+  })()`);
   if (!clicked.result.result.value) {
     return { status: 'click_failed' };
   }
-
   await sleep(2000);
-
-  // 3.4 验证：按钮文字是否变成"今日已签"
-  const verify = await evaluate(`
-    (() => {
-      const label = document.querySelector('[class*="accountCheckinButtonLabel"]');
-      const btn = document.querySelector('[class*="accountCheckinButton"]');
-      return label ? (label.textContent || '').trim() : (btn ? (btn.textContent || '').trim() : 'button_gone');
-    })()
-  `);
-
-  const afterText = verify.result.result.value;
-  if (/已签/.test(afterText)) {
+  const verify = await evaluate(`(() => {
+    const btn = ${q};
+    if (!btn) return 'button_gone';
+    const label = btn.querySelector('[class*="accountCheckinButtonLabel"]');
+    return { text: ((label ? label.textContent : btn.textContent) || '').trim(), disabled: !!btn.disabled };
+  })()`);
+  const after = verify.result.result.value;
+  const afterText = typeof after === 'string' ? after : after.text;
+  const afterDisabled = typeof after === 'object' && after !== null ? after.disabled : false;
+  if (/已签/.test(afterText) || afterDisabled) {
     return { status: 'success', detail: afterText };
   }
   return { status: 'unknown', detail: afterText };
 }
 
+async function performCheckIn(cdp) {
+  const { evaluate } = cdp;
+
+  // ---- 入口 A：Agent 模式头像菜单 ----
+  const hasTrigger = await evaluate(`!!document.querySelector('[class*="accountTrigger"]')`);
+  if (hasTrigger.result.result.value) {
+    const menuAlreadyOpen = await evaluate(`!!document.querySelector('[class*="accountPopover"]')`);
+    if (!menuAlreadyOpen.result.result.value) {
+      console.log('[INFO] 检测到头像入口，点击打开账户菜单...');
+      // UI 刚启动时点击可能无效，失败重试 3 轮
+      let menuOpened = false;
+      for (let round = 0; round < 3; round++) {
+        await evaluate(`
+          (() => {
+            const el = document.querySelector('[class*="accountTrigger"]');
+            if (el) { el.click(); return true; }
+            return false;
+          })()
+        `);
+        for (let i = 0; i < 10; i++) {
+          await sleep(500);
+          const open = await evaluate(`!!document.querySelector('[class*="accountPopover"]')`);
+          if (open.result.result.value) { menuOpened = true; break; }
+        }
+        if (menuOpened) break;
+        console.log('[WARN] 账户菜单未弹出，重试...');
+      }
+    } else {
+      console.log('[INFO] 账户菜单已经打开');
+    }
+
+    const inspect = await evaluate(`
+      (() => {
+        const btn = document.querySelector('[class*="accountCheckinButton"]');
+        const label = document.querySelector('[class*="accountCheckinButtonLabel"]');
+        if (!btn) return { error: 'checkin_button_not_found' };
+        return {
+          buttonText: label ? (label.textContent || '').trim() : (btn.textContent || '').trim(),
+          disabled: !!btn.disabled
+        };
+      })()
+    `);
+    const state = inspect.result.result.value;
+    if (state && !state.error) {
+      console.log(`[INFO] 签到按钮状态: ${JSON.stringify(state)}`);
+      if (state.disabled || /已签/.test(state.buttonText)) {
+        return { status: 'already_signed', detail: state.buttonText };
+      }
+      return clickAndVerify(cdp, '[class*="accountCheckinButton"]');
+    }
+
+    // 菜单开了但按钮缺失：区分"未登录"与"类名已变化"。
+    // 注意：已登录菜单固定含"退出登录"，先剔除再匹配登录引导词，避免误判。
+    const loginHint = await evaluate(`
+      (() => {
+        const menu = document.querySelector('[class*="accountPopover"]');
+        if (!menu) return { menuOpen: false };
+        const raw = (menu.textContent || '');
+        const t = raw.replace(/退出登录/g, '');
+        return {
+          menuOpen: true,
+          hasLoginHint: /立即登录|扫码|手机号|验证码/.test(t),
+          sample: raw.replace(/\\s+/g, ' ').slice(0, 80)
+        };
+      })()
+    `);
+    const hint = loginHint.result.result.value;
+    if (hint && hint.menuOpen && hint.hasLoginHint) {
+      return { status: 'not_logged_in', detail: hint.sample };
+    }
+    console.log('[WARN] 头像菜单内未找到签到按钮，尝试其它入口...');
+  }
+
+  // ---- 入口 B：IDEA/SOLO 模式（workbench）----
+  // B1：右上角签到横幅（一次性弹窗，弹出时存在）
+  const banner = await evaluate(`
+    (() => {
+      const btn = document.querySelector('[class*="commercialBannerPopupPrimaryAction"]');
+      if (!btn) return null;
+      return { text: (btn.textContent || '').trim(), disabled: !!btn.disabled };
+    })()
+  `);
+  const b = banner.result.result.value;
+  if (b) {
+    console.log(`[INFO] 签到横幅状态: ${JSON.stringify(b)}`);
+    if (b.disabled || /已签/.test(b.text)) {
+      return { status: 'already_signed', detail: b.text };
+    }
+    return clickAndVerify(cdp, '[class*="commercialBannerPopupPrimaryAction"]');
+  }
+
+  // B2：头像用户卡片。人工入口是点击设置齿轮右侧的头像（icube-user-profile），
+  // 但该入口被 titlebar 拖拽区拦截无法自动化；改为直接显示页面自带的
+  // icube-user-card 组件（移除其 shadow 内 .user-card-wrapper 的 hidden 类），
+  // 签到按钮为 icube-user-card__checkin-button，判定逻辑与其它入口一致。
+  const card = await evaluate(`
+    (() => {
+      const card = document.querySelector('icube-user-card');
+      if (!card || !card.shadowRoot) return null;
+      const wrap = card.shadowRoot.querySelector('.user-card-wrapper');
+      const btn = card.shadowRoot.querySelector('[class*="icube-user-card__checkin-button"]');
+      if (!wrap || !btn) return null;
+      wrap.classList.remove('hidden');
+      return { text: (btn.textContent || '').trim(), disabled: !!btn.disabled };
+    })()
+  `);
+  const cb = card.result.result.value;
+  if (cb) {
+    console.log(`[INFO] SOLO 头像卡片状态: ${JSON.stringify(cb)}`);
+    let out;
+    if (cb.disabled || /已签/.test(cb.text)) {
+      out = { status: 'already_signed', detail: cb.text };
+    } else {
+      out = await clickAndVerify(cdp, '[class*="icube-user-card__checkin-button"]', 'icube-user-card');
+    }
+    // 恢复卡片隐藏，不留展开痕迹
+    await evaluate(`(() => {
+      const w = document.querySelector('icube-user-card')?.shadowRoot?.querySelector('.user-card-wrapper');
+      if (w) w.classList.add('hidden');
+      return true;
+    })()`);
+    return out;
+  }
+
+  return { status: 'no_entry' };
+}
+
+// IDEA 模式（workbench）的签到横幅是临时弹窗，被关闭后该模式无稳定入口。
+// 此时点击右上角官方的"Agent ↗"按钮打开 Agent 模式窗口（solo-lite），再走头像菜单流程。
+async function openAgentWindowFromWorkbench() {
+  const targets = await listPageTargets();
+  const workbench = targets.find(t => /workbench\.html/i.test(t.url));
+  if (!workbench) return false;
+  let cdp;
+  try {
+    cdp = await connectPage(workbench);
+  } catch {
+    return false;
+  }
+  try {
+    const r = await cdp.evaluate(`(() => {
+      const btn = document.querySelector('[class*="icube-open-solo-lite-window-button"]');
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    return !!r.result.result.value;
+  } catch {
+    return false;
+  } finally {
+    cdp.ws.close();
+  }
+}
+
 // -------------------------------------------------------------
-// 4. 主流程
+// 6. 主流程。退出码：0 成功 / 1 失败 / 2 今日已签
 // -------------------------------------------------------------
 async function main() {
   try {
     await ensureDebugPort();
-    console.log('[INFO] 连接 CDP...');
-    const cdp = await connectCDP();
-    const result = await performCheckIn(cdp);
-    cdp.ws.close();
-    await sleep(300); // 等 WebSocket 句柄释放后再退出
+
+    let result = null;
+    let lastError = null;
+    for (let attempt = 0; attempt < 2 && !result; attempt++) {
+      const targets = await listPageTargets();
+      if (!targets.length) {
+        throw new Error('未找到 page 类型的 CDP target');
+      }
+      for (const t of targets) {
+        console.log(`[INFO] 探测页面: ${t.title || t.url}`);
+        let cdp;
+        try {
+          cdp = await connectPage(t);
+        } catch (err) {
+          lastError = err;
+          continue;
+        }
+        try {
+          result = await performCheckIn(cdp);
+        } catch (err) {
+          lastError = err;
+          cdp.ws.close();
+          continue;
+        }
+        cdp.ws.close();
+        if (result.status === 'no_entry') {
+          // 本页无签到入口：清空结果继续探测下一页
+          result = null;
+          lastError = new Error('该页面无签到入口');
+        } else {
+          break;
+        }
+      }
+      if (!result && attempt === 0 && await openAgentWindowFromWorkbench()) {
+        console.log('[INFO] IDEA 模式下未找到签到入口，已通过"Agent ↗"打开 Agent 窗口，重新探测...');
+        await sleep(5000);
+      }
+    }
+    await sleep(300);
+
+    if (!result || result.status === 'no_entry') {
+      throw lastError || new Error('所有页面均未找到签到入口');
+    }
 
     console.log('[RESULT]', JSON.stringify(result, null, 2));
 
-    // 签到完成（无论成功/已签/失败）后，可选关闭 Trae 进程
     if (CLOSE_AFTER_CHECKIN) {
       console.log('[INFO] --close 已指定，正在关闭 Trae...');
       await closeTrae();
@@ -468,12 +678,15 @@ async function main() {
     if (result.status === 'success') {
       process.exit(0);
     } else if (result.status === 'already_signed') {
-      process.exit(2); // 已签也是一种"成功"，但用不同退出码方便调度
+      process.exit(2);
     } else {
       process.exit(1);
     }
   } catch (err) {
     console.error('[ERROR]', err.message);
+    if (CLOSE_AFTER_CHECKIN) {
+      await closeTrae().catch(() => {});
+    }
     process.exit(1);
   }
 }

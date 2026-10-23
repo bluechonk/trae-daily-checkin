@@ -68,17 +68,30 @@ http://localhost:9222/json
 
 ## 四、定位关键元素
 
-连接 CDP 后，在页面里执行 JS 来查找元素。实际探查到的关键选择器：
+连接 CDP 后，在页面里执行 JS 来查找元素。实际探查到的关键选择器（2026-10-23 于 TraeCN 1.107.1 复核）。
 
-| 元素 | 选择器/特征 |
-|------|-------------|
-| 左下角头像入口 | 类名前缀 `accountTrigger`，文本包含 `用户` 的 `<button>` |
-| 账户弹窗容器 | 类名前缀 `accountPopover`、`accountCard` |
-| 每日签到标题 | 类名前缀 `accountCheckinTitle`（文本 `每日签到领 200 积分`） |
-| 签到按钮 | 类名前缀 `accountCheckinButton` |
-| 签到按钮文字 | 类名前缀 `accountCheckinButtonLabel` |
+Trae CN 有两种模式，签到入口不同，脚本按"solo-lite 优先、workbench 其次"逐页探测：
+
+| 模式 | 主窗口 target | 签到入口 |
+|------|--------------|----------|
+| Agent 模式（Build With TRAE） | `solo/solo-lite.html` | 左下角头像 → 账户菜单 |
+| IDEA/SOLO 模式 | `workbench/workbench.html` | 右上角签到横幅（一次性）→ 头像用户卡片 → "Agent ↗" 兜底 |
+
+| 元素 | 选择器/特征 | 模式 |
+|------|-------------|------|
+| 头像入口 | 类名前缀 `accountTrigger` | Agent |
+| 账户弹窗容器 | 类名前缀 `accountPopover`、`accountCard`（关闭时从 DOM 卸载） | Agent |
+| 签到按钮（菜单） | 类名前缀 `accountCheckinButton`；已签时 `disabled=true` | Agent |
+| 签到按钮文字 | 类名前缀 `accountCheckinButtonLabel`；未签"签到"，已签"已签到" | Agent |
+| 签到横幅按钮 | 类名前缀 `commercialBannerPopupPrimaryAction`（临时弹窗，关闭后消失） | IDEA |
+| 头像用户卡片 | 自定义元素 `icube-user-card` 的 shadowRoot，移除 `.user-card-wrapper` 的 `hidden` 类显示菜单，按钮为 `icube-user-card__checkin-button` | IDEA |
+| 模式切换按钮 | 类名前缀 `icube-open-solo-lite-window-button`（"Agent ↗"，最终兜底） | IDEA |
 
 由于 CSS 类名是工具生成的哈希后缀（如 `accountCheckinButton-hoMtQt`），脚本里使用 `*[class*="accountCheckinButton"]` 这种前缀匹配，比完全固定类名更抗更新。
+
+状态判定以按钮 `disabled` 属性和文本双重校验：`disabled=true` 或文本含"已签"即今日已签（SOLO 卡片的按钮已签时未必置 disabled，文本判定必留）。IDEA/SOLO 模式横幅被关闭后，脚本会显示常驻的头像用户卡片（穿透 shadowRoot 操作），仍不可用时点击"Agent ↗"打开 Agent 窗口完成签到。
+
+> IDEA/SOLO 模式下"设置"齿轮右侧也有一枚用户头像（自定义元素 `icube-user-profile`，shadowRoot 内 `.user-avatar-circle`），人工点击会弹出同款签到菜单。实测该入口无法被 CDP 自动化——titlebar 拖拽区（`-webkit-app-region: drag`）在合成器层拦截，真实输入事件同样无效；因此脚本直接显示常驻的 `icube-user-card` 组件替代，不依赖真实点击。
 
 ## 五、核心脚本设计
 
@@ -92,13 +105,15 @@ http://localhost:9222/json
    ├─ 未运行：自动启动 Trae（带调试端口）
    └─ 已运行但无端口：安全报错，或加 --force 参数强制重启
 
-2. 连接 CDP，定位 workbench page
+2. 列出全部 CDP page target，按 solo-lite（Agent 模式）> workbench（IDEA 模式）排序逐页探测
 
-3. 点击左下角头像打开账户菜单（状态感知，避免重复点击关闭菜单）
+3. 读取签到入口状态
+   ├─ Agent 模式：点头像打开账户菜单（状态感知 + 失败重试），读菜单内按钮
+   ├─ IDEA 模式：直接读右上角签到横幅按钮
+   ├─ disabled 或文本含"已签" → 今日已签，退出码 2
+   └─ 否则 → 点击按钮，等待 2 秒后验证文本/disabled 变化
 
-4. 在菜单中查找"每日签到"行，读取右侧按钮文本
-   ├─ 文本包含"已签" → 今日已签，退出码 2
-   └─ 否则 → 点击按钮，等待 2 秒后验证文本是否变为"今日已签"
+4. IDEA 模式无入口（横幅已关闭）时：点击"Agent ↗"打开 Agent 窗口，重新探测
 
 5. 输出结果并关闭 CDP 连接（加 --close 参数时再关闭 Trae 进程）
 ```
@@ -139,6 +154,8 @@ node src/auto-checkin.mjs --help
 | `--profile <path>` | 使用独立 user-data-dir（profile）启动，用于隔离测试 | 默认账号 |
 | `--close` | 签到完成后关闭 Trae 进程（适合无人值守） | 关 |
 
+> `--profile` 模式下独立 user-data-dir 是独立 Electron 实例，与正在运行的主实例并存，脚本不会杀掉主实例（建议配合 `--port 9223` 等非默认端口）。`--close` 在签到成功、已签、失败、异常所有路径下都会生效。
+
 > 兼容旧用法：以上参数均有对应环境变量 `TRAECHECKIN_EXE` / `TRAECHECKIN_PORT` / `TRAECHECKIN_FORCE_RELAUNCH` / `TRAECHECKIN_USER_DATA_DIR` / `TRAECHECKIN_CLOSE`，但**命令行参数优先级更高**。实际优先级：`命令行参数 > 环境变量 > 自动扫描定位`。
 
 ### 6.2 首次/手动运行
@@ -154,7 +171,7 @@ node src/auto-checkin.mjs
 
 ### 6.3 如何定位 Trae（自定义路径 + 自动扫描）
 
-`launch-with-debug.bat` 与 `relaunch-with-debug.ps1` 都调用共用的 `scripts\locate-trae.ps1` 定位；`src\auto-checkin.mjs` 内实现了等效的 Node 版定位。三处按同一优先级解析 Trae 可执行文件路径：
+`launch-with-debug.bat` 与 `relaunch-with-debug.ps1` 都调用共用的 `scripts\locate-trae.ps1` 定位；`src\auto-checkin.mjs` 内实现了等效的 Node 版定位。三处均按"进程 → 注册表 → 常见目录"的顺序解析 Trae 可执行文件路径：
 
 1. **自定义路径**：优先使用命令行参数 `--dir/--exe`（或 `TRAECHECKIN_EXE` 环境变量、`relaunch-with-debug.ps1` 的 `-ExePath` 参数）。
 2. **正在运行的进程**：查询系统中正在运行的 `TRAE*.exe` 主进程，取其真实可执行路径。
@@ -275,11 +292,54 @@ node src/auto-checkin.mjs --port 9223 --force --profile "D:\temp\trae-test-profi
 3. **单实例限制**：Electron 单实例机制导致"带端口启动"在已有实例运行时不会生效，因此脚本在冲突时默认安全退出，并提供强制重启选项。
 4. **UI 弹窗/网络失败**：如果签到接口失败，按钮文本不会变成"今日已签"，脚本会返回 `unknown`，此时需要人工查看。
 
-## 十、项目文件说明
+## 十、2026-10-23 实测修复记录
+
+在本机（TraeCN 1.107.1，安装名 `Trae CN.exe`）实测发现并修复了导致脚本完全失效的 bug。
+
+### 第一轮：主脚本重写
+
+| Bug | 现象 | 修复 |
+|-----|------|------|
+| CDP target 误选 | Electron 暴露多个 page（悬浮球 `floatingButton.html` + 主窗口），旧版取第一个 page，永远连到悬浮球，报"签到按钮不存在" | 优先选 URL 含 `solo-lite.html`/`workbench.html` 的 page |
+| 进程名硬编码 | `isTraeRunning`/`closeTrae` 只匹配 `*TRAE SOLO CN*`，本机进程名是 `Trae CN.exe`，检测恒为否、`--close` 杀不掉 | 匹配 `^(Trae\|TRAE).*\.exe$`，排除 `setup\|unins\|update` |
+| 安装包误判 | 自动扫描把 `Downloads\TRAE_CN-Setup-x64.exe` 当主程序启动，端口永远不开 | 文件名黑名单排除安装包/卸载器；扫描目录补 `%LOCALAPPDATA%\Programs` |
+| PS1 编码崩溃 | `locate-trae.ps1` 无 BOM，PowerShell 5.1 按 GBK 读中文直接解析报错，所有 bat 调用链失效 | ps1 补 UTF-8 BOM；Node 侧优先用 `pwsh` 7 |
+| 正则转义崩溃 | 模板字符串把 `\/` 变 `/`，注入页面的正则被截断报 `Invalid regular expression flags`；未登录检测用 `/登录/` 会被菜单里固定的"退出登录"误触发 | 异常分支加 undefined 防护；剔除"退出登录"后再匹配；打开菜单失败自动重试 3 轮 |
+
+### 第二轮：工具链与健壮性
+
+| Bug | 现象 | 修复 |
+|-----|------|------|
+| bat 中文解析崩溃 | `chcp 65001` + UTF-8 无 BOM 的中文 bat 在 cmd 下行偏移错位（`rem` 注释行被拆成命令执行、行被截断），且行为随行字节数漂移 | bat 改为全 ASCII（说明文字保留在 README 与 Node 脚本输出）；ps1 保持中文但必须带 BOM |
+| bat 延迟展开误判 | `launch-with-debug.bat` 在同一括号块内 set 后立即用 `%VAR%` 判断，解析期展开导致定位成功也报错 | 改用 `goto :run` 跳出块 |
+| echo 裸括号 | `uninstall-schedule.bat` 在 if 块内输出含 `(it may not exist)`，`)` 被当作块结束符 | 移除裸括号 |
+| 定位候选不含本机安装名 | ps1 候选名单与过滤器都不含 `Trae CN.exe`，pwsh 下也找不到 | 候选名补 `Trae CN.exe`，过滤器放宽为 `^Trae.*\.exe$` 并排除安装包 |
+| 杀进程按安装目录 | `relaunch-with-debug.ps1` 按 `*TRAE SOLO CN*` 过滤杀不到本机进程 | 改为杀 Trae 安装目录下全部进程（主程序 + 子进程 + 辅助工具） |
+| 端口归属不校验 | 任何应用监听 9222 都会被当成 Trae 连接（假服务测试中 `/json` 非数组直接崩） | 校验 `/json/version` 的 UA 含 `TraeCN`，`/json` 非数组时明确报错提示换端口 |
+| `--port` 不校验 | `--port abc` 得到 NaN，带着非法参数启动 Trae 白等 30 秒 | 解析后立即校验 1-65535 |
+| `--profile` 误杀主实例 | 独立 profile 与主实例并存是设计目标，但旧逻辑把"有 Trae 在运行"当冲突，`--force` 会连主账号实例一起杀 | profile 模式跳过运行检测，直接启动新实例 |
+| `readdirSync` 无保护 | 扫描 Trae 目录内容时权限拒绝会抛未捕获异常 | 补 try/catch |
+
+### 第三轮：双模式支持（Agent / IDEA）
+
+| Bug | 现象 | 修复 |
+|-----|------|------|
+| 只支持 Agent 模式 | Trae CN 启动后可能直接落在 IDEA 模式（`workbench.html`），其 DOM 没有 `account*` 类，脚本报"未找到签到按钮" | 新增 IDEA 模式入口：右上角签到横幅 `commercialBannerPopupPrimaryAction`，判定逻辑与菜单一致 |
+| IDEA 横幅是一次性弹窗 | 横幅被关闭后 IDEA 模式无任何签到入口 | 兜底点击 IDEA 窗口右上角"Agent ↗"（`icube-open-solo-lite-window-button`）打开 Agent 窗口重新探测；实测按钮即使 `display:none` 合成点击依然有效 |
+| 兜底逻辑短路 | `performCheckIn` 返回 `no_entry` 对象后 `!result` 恒为假，第二轮兜底永不触发 | 探测失败时把 `result` 清回 `null` |
+
+### agent-browser 实操结论，已写入技能文档 `.agents/skills/trae-checkin/SKILL.md` 与 `.agents/skills/agent-browser/SKILL.md`：
+
+1. 原生鼠标事件（`agent-browser click`）会被工作台遮挡层拦截（`Element is covered by <div>`），必须用 `eval` 执行 DOM 合成点击 `el.click()`；对 `display:none` 元素同样有效。
+2. Trae 冷启动时 UI 事件未挂载，点击头像无效，需要轮询加重试。
+3. `tab --url <pattern>` 在当前 CLI 版本（0.39.2）不可用，按 tab 编号切换（`tab t1`）。技能文档的 `tab --url <pattern>` 在当前 CLI 版本不可用，按 tab 编号切换（`tab t1`）。
+
+## 十一、项目文件说明
 
 ```text
 trae-daily-checkin/
-├── package.json                  # 项目元数据
+├── package.json                  # 项目元数据（license: MIT）
+├── LICENSE                       # MIT 许可证全文
 ├── README.md                     # 本文件
 ├── launch-with-debug.bat         # 双击启动 Trae（带调试端口，自动定位路径）
 ├── install-schedule.bat          # 一键注册"每日自动签到"任务计划
@@ -287,11 +347,27 @@ trae-daily-checkin/
 ├── scripts/
 │   ├── locate-trae.ps1           # 通用定位 Trae 路径（进程/注册表/常见目录，可单独调用）
 │   └── relaunch-with-debug.ps1   # 强制重启 Trae 并开放端口（复用 locate-trae.ps1 定位）
-└── src/
-    └── auto-checkin.mjs          # 自动签到主脚本（Node 版路径定位：自定义/自动扫描）
+├── src/
+│   └── auto-checkin.mjs          # 自动签到主脚本（Node 版路径定位：自定义/自动扫描）
+├── docs/
+│   ├── README.md                 # 文档目录入口
+│   └── third-party.md            # 第三方引用清单与许可证合规说明
+└── .agents/skills/
+    ├── trae-checkin/             # Trae 双模式签到技能手册（实测坑 + 配套流程）
+    │   └── SKILL.md
+    └── agent-browser/            # agent-browser 官方技能快照（GitHub 版，Apache-2.0）
+        ├── SKILL.md              # 官方发现桩
+        ├── LICENSE               # 上游 Apache-2.0 全文
+        ├── SOURCE-NOTES.md       # 上游来源与克隆信息
+        └── skill-data/           # core/electron 等全量场景技能
 ```
 
-## 十一、后续可扩展
+## 十二、许可证与第三方组件
+
+- 本项目自身以 **MIT** 许可发布，全文见 [LICENSE](LICENSE)。
+- 本仓库不含任何第三方源码；运行环境（Node.js，MIT）与外部工具（agent-browser，Apache-2.0）的出处、版本与合规说明，以及目标应用 Trae（专有软件）的使用边界，见 [docs/third-party.md](docs/third-party.md)。
+
+## 十三、后续可扩展
 
 - 增加截图/日志落盘，方便排查失败原因。
 - 在 Windows 任务计划里直接触发，实现完全无人值守。
